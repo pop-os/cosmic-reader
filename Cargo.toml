@@ -1,0 +1,20 @@
+[package]
+name = "cosmic-reader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+#TODO: color_space may not be maintained
+color_space = "0.5"
+env_logger = "0.11"
+log = "0.4"
+lopdf = "0.32"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+default-features = false
+features = ["tokio", "winit"]
+
+[features]
+default = ["wgpu"]
+wgpu = ["libcosmic/wgpu"]
