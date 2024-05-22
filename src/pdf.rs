@@ -2,7 +2,7 @@ use cosmic::{
     iced::{
         advanced::graphics::text::{self, cosmic_text},
         alignment::{Horizontal, Vertical},
-        font::{Family, Style, Weight},
+        font::{Family, Stretch, Style, Weight},
         keyboard,
         widget::{
             canvas::{
@@ -317,6 +317,40 @@ pub fn draw_page(
                                 {
                                     Ok(desc) => {
                                         log::info!("{desc:?}");
+
+                                        match desc.get(b"FontStretch").and_then(|x| x.as_name_str())
+                                        {
+                                            Ok(font_stretch) => match font_stretch {
+                                                "UltraCondensed" => {
+                                                    font.stretch = Stretch::UltraCondensed
+                                                }
+                                                "ExtraCondensed" => {
+                                                    font.stretch = Stretch::ExtraCondensed
+                                                }
+                                                "Condensed" => font.stretch = Stretch::Condensed,
+                                                "SemiCondensed" => {
+                                                    font.stretch = Stretch::SemiCondensed
+                                                }
+                                                "Normal" => font.stretch = Stretch::Normal,
+                                                "SemiExpanded" => {
+                                                    font.stretch = Stretch::SemiExpanded
+                                                }
+                                                "Expanded" => font.stretch = Stretch::Expanded,
+                                                "ExtraExpanded" => {
+                                                    font.stretch = Stretch::ExtraExpanded
+                                                }
+                                                "UltraExpanded" => {
+                                                    font.stretch = Stretch::UltraExpanded
+                                                }
+                                                _ => {
+                                                    log::warn!(
+                                                        "unknown stretch {:?}",
+                                                        font_stretch
+                                                    );
+                                                }
+                                            },
+                                            Err(_err) => {}
+                                        }
 
                                         match desc.get(b"FontWeight").and_then(|x| x.as_i64()) {
                                             Ok(font_weight) => match font_weight {
