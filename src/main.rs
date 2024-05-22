@@ -96,12 +96,10 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                         state.translate.x -= 16.0;
                     }
                     Key::Named(Named::PageUp) => {
-                        state.scale.x *= 1.1;
-                        state.scale.y = -state.scale.x;
+                        state.scale *= 1.1;
                     }
                     Key::Named(Named::PageDown) => {
-                        state.scale.x /= 1.1;
-                        state.scale.y = -state.scale.x;
+                        state.scale /= 1.1;
                     }
                     _ => return (Status::Ignored, None),
                 }
@@ -121,8 +119,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                         mouse::ScrollDelta::Pixels { x, y } => (x, y),
                     };
                     if state.modifiers.contains(keyboard::Modifiers::CTRL) {
-                        state.scale.x *= 1.1f32.powf(y / 16.0);
-                        state.scale.y = -state.scale.x;
+                        state.scale *= 1.1f32.powf(y / 16.0);
                     } else {
                         state.translate.x += x;
                         state.translate.y -= y;

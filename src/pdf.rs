@@ -2,6 +2,7 @@ use cosmic::{
     iced::{
         advanced::graphics::text::{self, cosmic_text},
         alignment::{Horizontal, Vertical},
+        font::{Family, Style, Weight},
         keyboard,
         widget::{
             canvas::{
@@ -70,7 +71,7 @@ impl Default for TextState {
 }
 
 pub struct CanvasState {
-    pub scale: Vector,
+    pub scale: f32,
     pub translate: Vector,
     pub modifiers: keyboard::Modifiers,
 }
@@ -78,7 +79,8 @@ pub struct CanvasState {
 impl Default for CanvasState {
     fn default() -> Self {
         Self {
-            scale: Vector::new(1.0, -1.0),
+            // Default PDF DPI is 72, default screen DPI is 96
+            scale: 96.0 / 72.0,
             translate: Vector::new(0.0, 0.0),
             modifiers: keyboard::Modifiers::empty(),
         }
@@ -153,10 +155,32 @@ pub fn draw_page(
     println!("{:#?}", res_dict);
     println!("{:#?}", res_vec);
 
-    frame.translate(Vector::new(0.0, frame.size().height));
-    frame.scale_nonuniform(state.scale);
-    frame.translate(state.translate);
+    // PDF's origin is the bottom left while the canvas origin is the top right, so flip it
+    {
+        frame.translate(Vector::new(0.0, frame.size().height));
+        frame.scale_nonuniform(Vector::new(1.0, -1.0));
+    }
+
+    // Apply zoom and pan
+    //TODO: can user's pan and zoom be applied without having to regenerate entire frame?
+    {
+        // Move to center
+        frame.translate(Vector::new(
+            frame.size().width / 2.0,
+            frame.size().height / 2.0,
+        ));
+        // Zoom
+        frame.scale(state.scale);
+        // Apply pan
+        frame.translate(state.translate);
+    }
     if let Some(rect) = media_box {
+        // Move back to origin
+        frame.translate(Vector::new(
+            -rect.size().width / 2.0,
+            -rect.size().height / 2.0,
+        ));
+        // Fill background
         frame.fill_rectangle(rect.position(), rect.size(), Color::WHITE);
     }
 
@@ -284,7 +308,64 @@ pub fn draw_page(
                         {
                             Some((_font_name, font_dict)) => {
                                 log::info!("{:?}", font_dict);
+
                                 encoding = Some(font_dict.get_font_encoding().to_string());
+
+                                match font_dict
+                                    .get_deref(b"FontDescriptor", doc)
+                                    .and_then(|x| x.as_dict())
+                                {
+                                    Ok(desc) => {
+                                        log::info!("{desc:?}");
+
+                                        match desc.get(b"FontWeight").and_then(|x| x.as_i64()) {
+                                            Ok(font_weight) => match font_weight {
+                                                100 => font.weight = Weight::Thin,
+                                                200 => font.weight = Weight::ExtraLight,
+                                                300 => font.weight = Weight::Light,
+                                                400 => font.weight = Weight::Normal,
+                                                500 => font.weight = Weight::Medium,
+                                                600 => font.weight = Weight::Semibold,
+                                                700 => font.weight = Weight::Bold,
+                                                800 => font.weight = Weight::ExtraBold,
+                                                900 => font.weight = Weight::Black,
+                                                _ => {
+                                                    log::warn!("unknown weight {:?}", font_weight);
+                                                }
+                                            },
+                                            Err(_err) => {}
+                                        }
+
+                                        match desc.get(b"Flags").and_then(|x| x.as_i64()) {
+                                            Ok(flags) => {
+                                                if flags & (1 << 0) != 0 {
+                                                    // FixedPitch
+                                                    font.family = Family::Monospace;
+                                                } else if flags & (1 << 1) != 0 {
+                                                    // Serif
+                                                    font.family = Family::Serif;
+                                                } else if flags & (1 << 3) != 0 {
+                                                    // Script
+                                                    font.family = Family::Cursive;
+                                                } else {
+                                                    // Standard is sans-serif
+                                                    font.family = Family::SansSerif;
+                                                }
+                                                if flags & (1 << 6) != 0 {
+                                                    // Italic
+                                                    font.style = Style::Italic;
+                                                }
+                                            }
+                                            Err(_err) => {}
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log::error!(
+                                            "failed to find font descriptor for font {name:?}: {err}"
+                                        );
+                                    }
+                                }
+
                                 match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
                                     Ok(base_font) => {
                                         log::info!("BaseFont {:?}", base_font);
@@ -294,13 +375,12 @@ pub fn draw_page(
                                             Some(some) => (first, some),
                                             None => ("", first),
                                         };
-                                        log::info!("tag {:?} PostScript name {:?}", tag, ps_name);
+                                        log::info!("tag {tag:?} PostScript name {ps_name:?}");
                                         //TODO: do something with font information
                                     }
                                     Err(err) => {
                                         log::error!(
-                                            "failed to get BaseFont for font {name:?}: {}",
-                                            err
+                                            "failed to get BaseFont for font {name:?}: {err}"
                                         );
                                     }
                                 }
