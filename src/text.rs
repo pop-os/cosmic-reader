@@ -29,7 +29,7 @@ pub struct Text {
     /// The line height of the text.
     pub line_height: LineHeight,
     /// The font of the text
-    pub font: Font,
+    pub attrs: cosmic_text::AttrsOwned,
     /// The horizontal alignment of the text
     pub horizontal_alignment: alignment::Horizontal,
     /// The vertical alignment of the text
@@ -47,7 +47,7 @@ impl Text {
         let mut buffer = cosmic_text::BufferLine::new(
             &self.content,
             cosmic_text::LineEnding::default(),
-            cosmic_text::AttrsList::new(text::to_attributes(self.font)),
+            cosmic_text::AttrsList::new(self.attrs.as_attrs()),
             text::to_shaping(self.shaping),
         );
 
@@ -159,36 +159,5 @@ impl Text {
         }
 
         line_width
-    }
-}
-
-impl Default for Text {
-    fn default() -> Text {
-        Text {
-            content: String::new(),
-            position: Point::ORIGIN,
-            color: Color::BLACK,
-            size: Pixels(14.0),
-            line_height: LineHeight::default(),
-            font: Font::default(),
-            horizontal_alignment: alignment::Horizontal::Left,
-            vertical_alignment: alignment::Vertical::Top,
-            shaping: Shaping::Advanced,
-        }
-    }
-}
-
-impl From<String> for Text {
-    fn from(content: String) -> Text {
-        Text {
-            content,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<&str> for Text {
-    fn from(content: &str) -> Text {
-        String::from(content).into()
     }
 }

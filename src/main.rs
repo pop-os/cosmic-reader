@@ -6,14 +6,14 @@ use cosmic::{
         mouse,
         mouse::Cursor,
         widget::canvas::{self, event::Status},
-        Length, Rectangle,
+        Color, Length, Point, Rectangle, Size, Vector,
     },
     iced_renderer,
     widget::{self, nav_bar::Model},
     Application, Element, Renderer, Theme,
 };
 use lopdf::{Document, ObjectId};
-use std::env;
+use std::{collections::HashMap, env, sync::Mutex};
 
 mod pdf;
 mod text;
@@ -59,6 +59,7 @@ struct App {
     flags: Flags,
     canvas_cache: canvas::Cache,
     nav_model: Model,
+    page_cache: Mutex<HashMap<ObjectId, Vec<pdf::PageOp>>>,
 }
 
 impl canvas::Program<Message, Theme, Renderer> for App {
@@ -142,11 +143,60 @@ impl canvas::Program<Message, Theme, Renderer> for App {
         _cursor: Cursor,
     ) -> Vec<iced_renderer::Geometry> {
         let geo = self.canvas_cache.draw(renderer, bounds.size(), |frame| {
-            if let Some(page_id) = self.nav_model.active_data::<ObjectId>() {
-                match pdf::draw_page(&self.flags.doc, *page_id, frame, state) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        log::error!("failed to draw page {:?}: {}", page_id, err);
+            if let Some(&page_id) = self.nav_model.active_data::<ObjectId>() {
+                let doc = &self.flags.doc;
+                let page_dict = doc.get_object(page_id).and_then(|obj| obj.as_dict());
+                println!("{:#?}", page_dict);
+                let media_box = page_dict.ok().and_then(|dict| {
+                    let rect = dict.get(b"MediaBox").ok()?.as_array().ok()?;
+                    Some(Rectangle::new(
+                        Point::new(rect.get(0)?.as_float().ok()?, rect.get(1)?.as_float().ok()?),
+                        Size::new(rect.get(2)?.as_float().ok()?, rect.get(3)?.as_float().ok()?),
+                    ))
+                });
+                println!("{:#?}", media_box);
+
+                // PDF's origin is the bottom left while the canvas origin is the top right, so flip it
+                {
+                    frame.translate(Vector::new(0.0, frame.size().height));
+                    frame.scale_nonuniform(Vector::new(1.0, -1.0));
+                }
+
+                // Apply zoom and pan
+                //TODO: can user's pan and zoom be applied without having to regenerate entire frame?
+                {
+                    // Move to center
+                    frame.translate(Vector::new(
+                        frame.size().width / 2.0,
+                        frame.size().height / 2.0,
+                    ));
+                    // Zoom
+                    frame.scale(state.scale);
+                    // Apply pan
+                    frame.translate(state.translate);
+                }
+                if let Some(rect) = media_box {
+                    // Move back to origin
+                    frame.translate(Vector::new(
+                        -rect.size().width / 2.0,
+                        -rect.size().height / 2.0,
+                    ));
+                    // Fill background
+                    frame.fill_rectangle(rect.position(), rect.size(), Color::WHITE);
+                }
+
+                {
+                    let mut page_cache = self.page_cache.lock().unwrap();
+                    let ops = page_cache
+                        .entry(page_id)
+                        .or_insert_with(|| pdf::page_ops(doc, page_id));
+                    for op in ops.iter() {
+                        if let Some(fill) = &op.fill {
+                            frame.fill(&op.path, fill.clone());
+                        }
+                        if let Some(stroke) = &op.stroke {
+                            frame.stroke(&op.path, stroke.clone());
+                        }
                     }
                 }
             }
@@ -185,6 +235,7 @@ impl Application for App {
                 flags,
                 canvas_cache: canvas::Cache::new(),
                 nav_model,
+                page_cache: Mutex::new(HashMap::new()),
             },
             Command::none(),
         )

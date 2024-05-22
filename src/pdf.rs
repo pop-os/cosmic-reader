@@ -1,8 +1,10 @@
 use cosmic::{
     iced::{
-        advanced::graphics::text::{self, cosmic_text},
+        advanced::graphics::text::{
+            self,
+            cosmic_text::{self, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight},
+        },
         alignment::{Horizontal, Vertical},
-        font::{Family, Stretch, Style, Weight},
         keyboard,
         widget::{
             canvas::{
@@ -16,7 +18,12 @@ use cosmic::{
     iced_renderer::geometry::Frame,
 };
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use std::{collections::BTreeMap, error::Error, mem, str};
+use std::{
+    collections::{BTreeMap, HashMap},
+    error::Error,
+    mem, str,
+    sync::Mutex,
+};
 
 use crate::text::Text;
 
@@ -46,7 +53,7 @@ struct TextState {
     y_line: f32,
     y_off: f32,
     encoding: Option<String>,
-    font: Font,
+    attrs: AttrsOwned,
     size: f32,
     leading: f32,
     mode: i64,
@@ -61,7 +68,7 @@ impl Default for TextState {
             y_line: 0.0,
             y_off: 0.0,
             encoding: None,
-            font: Font::DEFAULT,
+            attrs: AttrsOwned::new(Attrs::new()),
             size: 0.0,
             leading: 0.0,
             mode: 0,
@@ -132,540 +139,494 @@ fn finish_path(original: &mut canvas::path::Builder, transform: &Transform) -> c
     builder.build().transform(transform)
 }
 
-pub fn draw_page(
-    doc: &Document,
-    page_id: ObjectId,
-    frame: &mut Frame,
-    state: &CanvasState,
-) -> Result<(), Box<dyn Error>> {
-    println!("{:#?}", doc.catalog());
-    let page_dict = doc.get_object(page_id).and_then(|obj| obj.as_dict());
-    println!("{:#?}", page_dict);
-    let media_box = page_dict.ok().and_then(|dict| {
-        let rect = dict.get(b"MediaBox").ok()?.as_array().ok()?;
-        Some(Rectangle::new(
-            Point::new(rect.get(0)?.as_float().ok()?, rect.get(1)?.as_float().ok()?),
-            Size::new(rect.get(2)?.as_float().ok()?, rect.get(3)?.as_float().ok()?),
-        ))
-    });
-    println!("{:#?}", media_box);
+pub struct PageOp {
+    pub path: canvas::Path,
+    pub fill: Option<canvas::Fill>,
+    pub stroke: Option<canvas::Stroke<'static>>,
+}
+
+pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
+    let mut page_ops = Vec::new();
+    let content = match doc.get_and_decode_page_content(page_id) {
+        Ok(ok) => ok,
+        Err(err) => {
+            log::warn!("failed to get page contents for page {page_id:?}: {err}");
+            return page_ops;
+        }
+    };
+
     let fonts = doc.get_page_fonts(page_id);
     println!("{:#?}", fonts);
     let (res_dict, res_vec) = doc.get_page_resources(page_id);
     println!("{:#?}", res_dict);
     println!("{:#?}", res_vec);
 
-    // PDF's origin is the bottom left while the canvas origin is the top right, so flip it
-    {
-        frame.translate(Vector::new(0.0, frame.size().height));
-        frame.scale_nonuniform(Vector::new(1.0, -1.0));
-    }
+    let mut color_space_fill = "DeviceGray".to_string();
+    let mut color_fill = vec![Object::Real(0.0)];
+    let mut color_space_stroke = "DeviceGray".to_string();
+    let mut color_stroke = vec![Object::Real(0.0)];
+    let mut graphics_states = vec![GraphicsState::default()];
+    let mut text_states = vec![];
+    let mut p = canvas::path::Builder::new();
+    for op in content.operations.iter() {
+        //TODO: better handle errors with object conversions
+        // https://pdfa.org/wp-content/uploads/2023/08/PDF-Operators-CheatSheet.pdf
+        match op.operator.as_str() {
+            // Path construction
+            "c" => {
+                let x1 = op.operands[0].as_float().unwrap();
+                let y1 = op.operands[1].as_float().unwrap();
+                let x2 = op.operands[2].as_float().unwrap();
+                let y2 = op.operands[3].as_float().unwrap();
+                let x3 = op.operands[4].as_float().unwrap();
+                let y3 = op.operands[5].as_float().unwrap();
+                log::info!("bezier_curve_to {x1}, {y1}; {x2}, {y2}; {x3}, {y3}");
+                p.bezier_curve_to(Point::new(x1, y1), Point::new(x2, y2), Point::new(x3, y3));
+            }
+            "h" => {
+                log::info!("close");
+                p.close();
+            }
+            "l" => {
+                let x = op.operands[0].as_float().unwrap();
+                let y = op.operands[1].as_float().unwrap();
+                log::info!("line_to {x}, {y}");
+                p.line_to(Point::new(x, y));
+            }
+            "m" => {
+                let x = op.operands[0].as_float().unwrap();
+                let y = op.operands[1].as_float().unwrap();
+                log::info!("move_to {x}, {y}");
+                p.move_to(Point::new(x, y));
+            }
+            "re" => {
+                let x = op.operands[0].as_float().unwrap();
+                let y = op.operands[1].as_float().unwrap();
+                let w = op.operands[2].as_float().unwrap();
+                let h = op.operands[3].as_float().unwrap();
+                log::info!("rectangle {x}, {y}, {w}, {y}");
+                p.rectangle(Point::new(x, y), Size::new(w, h));
+            }
 
-    // Apply zoom and pan
-    //TODO: can user's pan and zoom be applied without having to regenerate entire frame?
-    {
-        // Move to center
-        frame.translate(Vector::new(
-            frame.size().width / 2.0,
-            frame.size().height / 2.0,
-        ));
-        // Zoom
-        frame.scale(state.scale);
-        // Apply pan
-        frame.translate(state.translate);
-    }
-    if let Some(rect) = media_box {
-        // Move back to origin
-        frame.translate(Vector::new(
-            -rect.size().width / 2.0,
-            -rect.size().height / 2.0,
-        ));
-        // Fill background
-        frame.fill_rectangle(rect.position(), rect.size(), Color::WHITE);
-    }
+            // Path painting
+            "b" | "B" | "b*" | "B*" | "f" | "f*" | "n" | "s" | "S" => {
+                let (close, fill, stroke, rule) = match op.operator.as_str() {
+                    "b" => (true, true, true, canvas::fill::Rule::NonZero),
+                    "B" => (false, true, true, canvas::fill::Rule::NonZero),
+                    "b*" => (true, true, true, canvas::fill::Rule::EvenOdd),
+                    "B*" => (false, true, true, canvas::fill::Rule::EvenOdd),
+                    "f" => (true, true, false, canvas::fill::Rule::NonZero),
+                    "f*" => (false, true, false, canvas::fill::Rule::EvenOdd),
+                    "F" => (false, true, false, canvas::fill::Rule::NonZero),
+                    "n" => (false, false, false, canvas::fill::Rule::NonZero),
+                    "s" => (true, false, true, canvas::fill::Rule::NonZero),
+                    "S" => (false, false, true, canvas::fill::Rule::NonZero),
+                    _ => panic!("unexpected path painting operator {}", op.operator),
+                };
+                log::info!(
+                    "{}{}{}end path using {:?} winding rule",
+                    if close { "close, " } else { "" },
+                    if fill { "fill, " } else { "" },
+                    if stroke { "stroke, " } else { "" },
+                    rule
+                );
+                if close {
+                    p.close();
+                }
+                let gs = graphics_states.last().unwrap();
+                page_ops.push(PageOp {
+                    path: finish_path(&mut p, &gs.transform),
+                    fill: if fill {
+                        let mut f =
+                            canvas::Fill::from(convert_color(&color_space_fill, &color_fill));
+                        f.rule = rule;
+                        Some(f)
+                    } else {
+                        None
+                    },
+                    stroke: if stroke {
+                        Some(
+                            canvas::Stroke::default()
+                                .with_color(convert_color(&color_space_stroke, &color_stroke))
+                                .with_line_join(match gs.line_join_style {
+                                    0 => canvas::LineJoin::Miter,
+                                    1 => canvas::LineJoin::Round,
+                                    2 => canvas::LineJoin::Bevel,
+                                    _ => canvas::LineJoin::default(),
+                                }),
+                        )
+                    } else {
+                        None
+                    },
+                });
+            }
 
-    match doc.get_and_decode_page_content(page_id) {
-        Ok(content) => {
-            let mut color_space_fill = "DeviceGray".to_string();
-            let mut color_fill = vec![Object::Real(0.0)];
-            let mut color_space_stroke = "DeviceGray".to_string();
-            let mut color_stroke = vec![Object::Real(0.0)];
-            let mut graphics_states = vec![GraphicsState::default()];
-            let mut text_states = vec![];
-            let mut p = canvas::path::Builder::new();
-            for op in content.operations.iter() {
-                //TODO: better handle errors with object conversions
-                // https://pdfa.org/wp-content/uploads/2023/08/PDF-Operators-CheatSheet.pdf
-                match op.operator.as_str() {
-                    // Path construction
-                    "c" => {
-                        let x1 = op.operands[0].as_float().unwrap();
-                        let y1 = op.operands[1].as_float().unwrap();
-                        let x2 = op.operands[2].as_float().unwrap();
-                        let y2 = op.operands[3].as_float().unwrap();
-                        let x3 = op.operands[4].as_float().unwrap();
-                        let y3 = op.operands[5].as_float().unwrap();
-                        log::info!("bezier_curve_to {x1}, {y1}; {x2}, {y2}; {x3}, {y3}");
-                        p.bezier_curve_to(
-                            Point::new(x1, y1),
-                            Point::new(x2, y2),
-                            Point::new(x3, y3),
-                        );
-                    }
-                    "h" => {
-                        log::info!("close");
-                        p.close();
-                    }
-                    "l" => {
-                        let x = op.operands[0].as_float().unwrap();
-                        let y = op.operands[1].as_float().unwrap();
-                        log::info!("line_to {x}, {y}");
-                        p.line_to(Point::new(x, y));
-                    }
-                    "m" => {
-                        let x = op.operands[0].as_float().unwrap();
-                        let y = op.operands[1].as_float().unwrap();
-                        log::info!("move_to {x}, {y}");
-                        p.move_to(Point::new(x, y));
-                    }
-                    "re" => {
-                        let x = op.operands[0].as_float().unwrap();
-                        let y = op.operands[1].as_float().unwrap();
-                        let w = op.operands[2].as_float().unwrap();
-                        let h = op.operands[3].as_float().unwrap();
-                        log::info!("rectangle {x}, {y}, {w}, {y}");
-                        p.rectangle(Point::new(x, y), Size::new(w, h));
-                    }
+            // Text object
+            "BT" => {
+                text_states.push(TextState::default());
+            }
+            "ET" => {
+                text_states.pop();
+            }
 
-                    // Path painting
-                    "b" | "B" | "b*" | "B*" | "f" | "f*" | "n" | "s" | "S" => {
-                        let (close, fill, stroke, rule) = match op.operator.as_str() {
-                            "b" => (true, true, true, canvas::fill::Rule::NonZero),
-                            "B" => (false, true, true, canvas::fill::Rule::NonZero),
-                            "b*" => (true, true, true, canvas::fill::Rule::EvenOdd),
-                            "B*" => (false, true, true, canvas::fill::Rule::EvenOdd),
-                            "f" => (true, true, false, canvas::fill::Rule::NonZero),
-                            "f*" => (false, true, false, canvas::fill::Rule::EvenOdd),
-                            "F" => (false, true, false, canvas::fill::Rule::NonZero),
-                            "n" => (false, false, false, canvas::fill::Rule::NonZero),
-                            "s" => (true, false, true, canvas::fill::Rule::NonZero),
-                            "S" => (false, false, true, canvas::fill::Rule::NonZero),
-                            _ => panic!("unexpected path painting operator {}", op.operator),
-                        };
-                        log::info!(
-                            "{}{}{}end path using {:?} winding rule",
-                            if close { "close, " } else { "" },
-                            if fill { "fill, " } else { "" },
-                            if stroke { "stroke, " } else { "" },
-                            rule
-                        );
-                        if close {
-                            p.close();
-                        }
-                        let gs = graphics_states.last().unwrap();
-                        let path = finish_path(&mut p, &gs.transform);
-                        if fill {
-                            let mut f =
-                                canvas::Fill::from(convert_color(&color_space_fill, &color_fill));
-                            f.rule = rule;
-                            frame.fill(&path, f);
-                        }
-                        if stroke {
-                            frame.stroke(
-                                &path,
-                                canvas::Stroke::default()
-                                    .with_color(convert_color(&color_space_stroke, &color_stroke))
-                                    .with_line_join(match gs.line_join_style {
-                                        0 => canvas::LineJoin::Miter,
-                                        1 => canvas::LineJoin::Round,
-                                        2 => canvas::LineJoin::Bevel,
-                                        _ => canvas::LineJoin::default(),
-                                    }),
-                            );
-                        }
-                    }
+            // Text state
+            "Tf" => {
+                //TODO: use font name
+                let name = op.operands[0].as_name_str().unwrap();
+                let size = op.operands[1].as_float().unwrap();
+                log::info!("set font {name:?} size {size}");
 
-                    // Text object
-                    "BT" => {
-                        text_states.push(TextState::default());
-                    }
-                    "ET" => {
-                        text_states.pop();
-                    }
+                let mut encoding = None;
+                let mut attrs = AttrsOwned::new(Attrs::new());
+                match fonts
+                    .iter()
+                    .find(|(font_name, _font_dict)| name.as_bytes() == *font_name)
+                {
+                    Some((_font_name, font_dict)) => {
+                        log::info!("{:?}", font_dict);
 
-                    // Text state
-                    "Tf" => {
-                        //TODO: use font name
-                        let name = op.operands[0].as_name_str().unwrap();
-                        let size = op.operands[1].as_float().unwrap();
-                        log::info!("set font {name:?} size {size}");
+                        encoding = Some(font_dict.get_font_encoding().to_string());
 
-                        let mut encoding = None;
-                        let mut font = Font::DEFAULT;
-                        match fonts
-                            .iter()
-                            .find(|(font_name, _font_dict)| name.as_bytes() == *font_name)
+                        match font_dict
+                            .get_deref(b"FontDescriptor", doc)
+                            .and_then(|x| x.as_dict())
                         {
-                            Some((_font_name, font_dict)) => {
-                                log::info!("{:?}", font_dict);
+                            Ok(desc) => {
+                                log::info!("{desc:?}");
 
-                                encoding = Some(font_dict.get_font_encoding().to_string());
-
-                                match font_dict
-                                    .get_deref(b"FontDescriptor", doc)
-                                    .and_then(|x| x.as_dict())
-                                {
-                                    Ok(desc) => {
-                                        log::info!("{desc:?}");
-
-                                        match desc.get(b"FontStretch").and_then(|x| x.as_name_str())
-                                        {
-                                            Ok(font_stretch) => match font_stretch {
-                                                "UltraCondensed" => {
-                                                    font.stretch = Stretch::UltraCondensed
-                                                }
-                                                "ExtraCondensed" => {
-                                                    font.stretch = Stretch::ExtraCondensed
-                                                }
-                                                "Condensed" => font.stretch = Stretch::Condensed,
-                                                "SemiCondensed" => {
-                                                    font.stretch = Stretch::SemiCondensed
-                                                }
-                                                "Normal" => font.stretch = Stretch::Normal,
-                                                "SemiExpanded" => {
-                                                    font.stretch = Stretch::SemiExpanded
-                                                }
-                                                "Expanded" => font.stretch = Stretch::Expanded,
-                                                "ExtraExpanded" => {
-                                                    font.stretch = Stretch::ExtraExpanded
-                                                }
-                                                "UltraExpanded" => {
-                                                    font.stretch = Stretch::UltraExpanded
-                                                }
-                                                _ => {
-                                                    log::warn!(
-                                                        "unknown stretch {:?}",
-                                                        font_stretch
-                                                    );
-                                                }
-                                            },
-                                            Err(_err) => {}
+                                match desc.get(b"FontStretch").and_then(|x| x.as_name_str()) {
+                                    Ok(font_stretch) => match font_stretch {
+                                        "UltraCondensed" => attrs.stretch = Stretch::UltraCondensed,
+                                        "ExtraCondensed" => attrs.stretch = Stretch::ExtraCondensed,
+                                        "Condensed" => attrs.stretch = Stretch::Condensed,
+                                        "SemiCondensed" => attrs.stretch = Stretch::SemiCondensed,
+                                        "Normal" => attrs.stretch = Stretch::Normal,
+                                        "SemiExpanded" => attrs.stretch = Stretch::SemiExpanded,
+                                        "Expanded" => attrs.stretch = Stretch::Expanded,
+                                        "ExtraExpanded" => attrs.stretch = Stretch::ExtraExpanded,
+                                        "UltraExpanded" => attrs.stretch = Stretch::UltraExpanded,
+                                        _ => {
+                                            log::warn!("unknown stretch {:?}", font_stretch);
                                         }
-
-                                        match desc.get(b"FontWeight").and_then(|x| x.as_i64()) {
-                                            Ok(font_weight) => match font_weight {
-                                                100 => font.weight = Weight::Thin,
-                                                200 => font.weight = Weight::ExtraLight,
-                                                300 => font.weight = Weight::Light,
-                                                400 => font.weight = Weight::Normal,
-                                                500 => font.weight = Weight::Medium,
-                                                600 => font.weight = Weight::Semibold,
-                                                700 => font.weight = Weight::Bold,
-                                                800 => font.weight = Weight::ExtraBold,
-                                                900 => font.weight = Weight::Black,
-                                                _ => {
-                                                    log::warn!("unknown weight {:?}", font_weight);
-                                                }
-                                            },
-                                            Err(_err) => {}
-                                        }
-
-                                        match desc.get(b"Flags").and_then(|x| x.as_i64()) {
-                                            Ok(flags) => {
-                                                if flags & (1 << 0) != 0 {
-                                                    // FixedPitch
-                                                    font.family = Family::Monospace;
-                                                } else if flags & (1 << 1) != 0 {
-                                                    // Serif
-                                                    font.family = Family::Serif;
-                                                } else if flags & (1 << 3) != 0 {
-                                                    // Script
-                                                    font.family = Family::Cursive;
-                                                } else {
-                                                    // Standard is sans-serif
-                                                    font.family = Family::SansSerif;
-                                                }
-                                                if flags & (1 << 6) != 0 {
-                                                    // Italic
-                                                    font.style = Style::Italic;
-                                                }
-                                            }
-                                            Err(_err) => {}
-                                        }
-                                    }
-                                    Err(err) => {
-                                        log::error!(
-                                            "failed to find font descriptor for font {name:?}: {err}"
-                                        );
-                                    }
+                                    },
+                                    Err(_err) => {}
                                 }
 
-                                match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
-                                    Ok(base_font) => {
-                                        log::info!("BaseFont {:?}", base_font);
-                                        let mut split = base_font.splitn(2, '+');
-                                        let first = split.next().unwrap_or_default();
-                                        let (tag, ps_name) = match split.next() {
-                                            Some(some) => (first, some),
-                                            None => ("", first),
-                                        };
-                                        log::info!("tag {tag:?} PostScript name {ps_name:?}");
-                                        //TODO: do something with font information
+                                match desc.get(b"FontWeight").and_then(|x| x.as_i64()) {
+                                    Ok(font_weight) => match u16::try_from(font_weight) {
+                                        Ok(ok) => attrs.weight = Weight(ok),
+                                        Err(_) => {
+                                            log::warn!("unknown weight {:?}", font_weight);
+                                        }
+                                    },
+                                    Err(_err) => {}
+                                }
+
+                                match desc.get(b"Flags").and_then(|x| x.as_i64()) {
+                                    Ok(flags) => {
+                                        if flags & (1 << 0) != 0 {
+                                            // FixedPitch
+                                            attrs.family_owned = FamilyOwned::Monospace;
+                                        } else if flags & (1 << 1) != 0 {
+                                            // Serif
+                                            attrs.family_owned = FamilyOwned::Serif;
+                                        } else if flags & (1 << 3) != 0 {
+                                            // Script
+                                            attrs.family_owned = FamilyOwned::Cursive;
+                                        } else {
+                                            // Standard is sans-serif
+                                            attrs.family_owned = FamilyOwned::SansSerif;
+                                        }
+                                        if flags & (1 << 6) != 0 {
+                                            // Italic
+                                            attrs.style = Style::Italic;
+                                        }
                                     }
-                                    Err(err) => {
-                                        log::error!(
-                                            "failed to get BaseFont for font {name:?}: {err}"
-                                        );
+                                    Err(_err) => {}
+                                }
+
+                                match desc.get(b"FontFamily").and_then(|x| x.as_name_str()) {
+                                    Ok(font_family) => {
+                                        attrs.family_owned =
+                                            FamilyOwned::Name(font_family.to_string());
                                     }
+                                    Err(_err) => {}
                                 }
                             }
-                            None => {
-                                log::error!("failed to find font {name:?}");
+                            Err(err) => {
+                                log::error!(
+                                    "failed to find font descriptor for font {name:?}: {err}"
+                                );
                             }
                         }
 
-                        let ts = text_states.last_mut().unwrap();
-                        ts.encoding = encoding;
-                        ts.font = font;
-                        ts.size = size;
+                        match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
+                            Ok(base_font) => {
+                                log::info!("BaseFont {:?}", base_font);
+                                let mut split = base_font.splitn(2, '+');
+                                let first = split.next().unwrap_or_default();
+                                let (tag, ps_name) = match split.next() {
+                                    Some(some) => (first, some),
+                                    None => ("", first),
+                                };
+                                log::info!("tag {tag:?} PostScript name {ps_name:?}");
+                                //TODO: do something with font information
+                            }
+                            Err(err) => {
+                                log::error!("failed to get BaseFont for font {name:?}: {err}");
+                            }
+                        }
                     }
-                    "TL" => {
-                        let leading = op.operands[0].as_float().unwrap();
-                        log::info!("set text leading {leading}");
-                        let ts = text_states.last_mut().unwrap();
-                        ts.leading = leading;
+                    None => {
+                        log::error!("failed to find font {name:?}");
                     }
-                    "Ts" => {
-                        let rise = op.operands[0].as_float().unwrap();
-                        log::info!("set text rise {rise}");
-                        let ts = text_states.last_mut().unwrap();
-                        ts.y_off = rise;
-                    }
+                }
 
-                    // Text positioning
-                    "T*" => {
-                        log::info!("move to start of next line");
-                        let ts = text_states.last_mut().unwrap();
-                        ts.x_off = 0.0;
-                        ts.y_line += ts.leading;
-                        ts.y_off = 0.0;
-                    }
-                    "Td" => {
-                        let x = op.operands[0].as_float().unwrap();
-                        let y = op.operands[1].as_float().unwrap();
-                        log::info!("move to start of next line {x}, {y}");
-                        let ts = text_states.last_mut().unwrap();
-                        ts.x_line += x;
-                        ts.x_off = 0.0;
-                        ts.y_line -= y;
-                        ts.y_off = 0.0;
-                    }
-                    "TD" => {
-                        let x = op.operands[0].as_float().unwrap();
-                        let y = op.operands[1].as_float().unwrap();
-                        log::info!("move to start of next line {x}, {y} and set leading");
-                        let ts = text_states.last_mut().unwrap();
-                        ts.x_line += x;
-                        ts.x_off = 0.0;
-                        ts.y_line -= y;
-                        ts.y_off = 0.0;
-                        ts.leading = -y;
-                    }
-                    "Tm" => {
-                        let a = op.operands[0].as_float().unwrap();
-                        let b = op.operands[1].as_float().unwrap();
-                        let c = op.operands[2].as_float().unwrap();
-                        let d = op.operands[3].as_float().unwrap();
-                        let e = op.operands[4].as_float().unwrap();
-                        let f = op.operands[5].as_float().unwrap();
-                        let ts = text_states.last_mut().unwrap();
-                        ts.transform = Transform::new(a, b, c, d, e, f);
-                        log::info!("set text transform {:?}", ts.transform);
-                    }
+                let ts = text_states.last_mut().unwrap();
+                ts.encoding = encoding;
+                ts.attrs = attrs;
+                ts.size = size;
+            }
+            "TL" => {
+                let leading = op.operands[0].as_float().unwrap();
+                log::info!("set text leading {leading}");
+                let ts = text_states.last_mut().unwrap();
+                ts.leading = leading;
+            }
+            "Ts" => {
+                let rise = op.operands[0].as_float().unwrap();
+                log::info!("set text rise {rise}");
+                let ts = text_states.last_mut().unwrap();
+                ts.y_off = rise;
+            }
 
-                    // Text showing
-                    "Tj" | "TJ" => {
-                        let has_adjustment = match op.operator.as_str() {
-                            "Tj" => false,
-                            "TJ" => true,
-                            _ => panic!("uexpected text showing operator {}", op.operator),
-                        };
-                        log::info!(
-                            "show text{} {:?}",
-                            if has_adjustment {
-                                " with adjustment"
-                            } else {
-                                ""
-                            },
-                            op.operands
-                        );
-                        //TODO: clean this up
-                        let elements = if has_adjustment {
-                            op.operands[0].as_array().unwrap()
+            // Text positioning
+            "T*" => {
+                log::info!("move to start of next line");
+                let ts = text_states.last_mut().unwrap();
+                ts.x_off = 0.0;
+                ts.y_line += ts.leading;
+                ts.y_off = 0.0;
+            }
+            "Td" => {
+                let x = op.operands[0].as_float().unwrap();
+                let y = op.operands[1].as_float().unwrap();
+                log::info!("move to start of next line {x}, {y}");
+                let ts = text_states.last_mut().unwrap();
+                ts.x_line += x;
+                ts.x_off = 0.0;
+                ts.y_line -= y;
+                ts.y_off = 0.0;
+            }
+            "TD" => {
+                let x = op.operands[0].as_float().unwrap();
+                let y = op.operands[1].as_float().unwrap();
+                log::info!("move to start of next line {x}, {y} and set leading");
+                let ts = text_states.last_mut().unwrap();
+                ts.x_line += x;
+                ts.x_off = 0.0;
+                ts.y_line -= y;
+                ts.y_off = 0.0;
+                ts.leading = -y;
+            }
+            "Tm" => {
+                let a = op.operands[0].as_float().unwrap();
+                let b = op.operands[1].as_float().unwrap();
+                let c = op.operands[2].as_float().unwrap();
+                let d = op.operands[3].as_float().unwrap();
+                let e = op.operands[4].as_float().unwrap();
+                let f = op.operands[5].as_float().unwrap();
+                let ts = text_states.last_mut().unwrap();
+                ts.transform = Transform::new(a, b, c, d, e, f);
+                log::info!("set text transform {:?}", ts.transform);
+            }
+
+            // Text showing
+            "Tj" | "TJ" => {
+                let has_adjustment = match op.operator.as_str() {
+                    "Tj" => false,
+                    "TJ" => true,
+                    _ => panic!("uexpected text showing operator {}", op.operator),
+                };
+                log::info!(
+                    "show text{} {:?}",
+                    if has_adjustment {
+                        " with adjustment"
+                    } else {
+                        ""
+                    },
+                    op.operands
+                );
+                //TODO: clean this up
+                let elements = if has_adjustment {
+                    op.operands[0].as_array().unwrap()
+                } else {
+                    &op.operands
+                };
+                let mut i = 0;
+                while i < elements.len() {
+                    let ts = text_states.last_mut().unwrap();
+                    let content = Document::decode_text(
+                        ts.encoding.as_deref(),
+                        elements[i].as_str().unwrap(),
+                    );
+                    i += 1;
+                    let adjustment = if has_adjustment && i < elements.len() {
+                        let adjustment = elements[i].as_float().unwrap();
+                        i += 1;
+                        adjustment
+                    } else {
+                        0.0
+                    };
+                    //TODO: fill or stroke?
+                    let stroke = false;
+                    //TODO: set all of these parameters
+                    let text = Text {
+                        content: content.to_string(),
+                        position: Point::new(ts.x_line + ts.x_off, ts.y_line + ts.y_off - ts.size),
+                        color: if stroke {
+                            convert_color(&color_space_stroke, &color_stroke)
                         } else {
-                            &op.operands
-                        };
-                        let mut i = 0;
-                        while i < elements.len() {
-                            let ts = text_states.last_mut().unwrap();
-                            let content = Document::decode_text(
-                                ts.encoding.as_deref(),
-                                elements[i].as_str().unwrap(),
-                            );
-                            i += 1;
-                            let adjustment = if has_adjustment && i < elements.len() {
-                                let adjustment = elements[i].as_float().unwrap();
-                                i += 1;
-                                adjustment
+                            convert_color(&color_space_fill, &color_fill)
+                        },
+                        size: Pixels(ts.size),
+                        line_height: LineHeight::Absolute(Pixels(ts.leading)),
+                        attrs: ts.attrs.clone(),
+                        horizontal_alignment: Horizontal::Left,
+                        vertical_alignment: Vertical::Top,
+                        shaping: Shaping::Advanced,
+                    };
+                    let max_w = text.draw_with(|mut path, color| {
+                        path = path
+                            .transform(&Transform::scale(1.0, -1.0))
+                            .transform(&ts.transform);
+                        page_ops.push(PageOp {
+                            path,
+                            //TODO: more fill options
+                            fill: if !stroke {
+                                Some(canvas::Fill::from(color))
                             } else {
-                                0.0
-                            };
-                            //TODO: fill or stroke?
-                            let stroke = false;
-                            //TODO: set all of these parameters
-                            let text = Text {
-                                content: content.to_string(),
-                                position: Point::new(
-                                    ts.x_line + ts.x_off,
-                                    ts.y_line + ts.y_off - ts.size,
-                                ),
-                                color: if stroke {
-                                    convert_color(&color_space_stroke, &color_stroke)
-                                } else {
-                                    convert_color(&color_space_fill, &color_fill)
-                                },
-                                size: Pixels(ts.size),
-                                line_height: LineHeight::Absolute(Pixels(ts.leading)),
-                                font: ts.font,
-                                horizontal_alignment: Horizontal::Left,
-                                vertical_alignment: Vertical::Top,
-                                shaping: Shaping::Advanced,
-                            };
-                            let max_w = text.draw_with(|mut path, color| {
-                                path = path
-                                    .transform(&Transform::scale(1.0, -1.0))
-                                    .transform(&ts.transform);
-                                if stroke {
-                                    frame
-                                        .stroke(&path, canvas::Stroke::default().with_color(color));
-                                } else {
-                                    frame.fill(&path, color);
-                                }
-                            });
-                            ts.x_off += max_w;
-                            //TODO: why does adjustment need to be inverse transformed?
-                            match ts
-                                .transform
-                                .inverse()
-                                .map(|x| x.transform_vector(Vector2D::new(adjustment, 0.0)))
-                            {
-                                Some(v) => {
-                                    //TODO: v.y?
-                                    log::info!(
-                                        "line {} off {} adj {} trans {} max_w {} content {:?}",
-                                        ts.x_line,
-                                        ts.x_off,
-                                        adjustment,
-                                        v.x,
-                                        max_w,
-                                        content,
-                                    );
-                                    //ts.x_off -= v.x;
-                                }
-                                None => {
-                                    //TODO: is this a problem?
-                                }
-                            }
+                                None
+                            },
+                            //TODO: more stroke options
+                            stroke: if stroke {
+                                Some(canvas::Stroke::default().with_color(color))
+                            } else {
+                                None
+                            },
+                        });
+                    });
+                    ts.x_off += max_w;
+                    //TODO: why does adjustment need to be inverse transformed?
+                    match ts
+                        .transform
+                        .inverse()
+                        .map(|x| x.transform_vector(Vector2D::new(adjustment, 0.0)))
+                    {
+                        Some(v) => {
+                            //TODO: v.y?
+                            log::info!(
+                                "line {} off {} adj {} trans {} max_w {} content {:?}",
+                                ts.x_line,
+                                ts.x_off,
+                                adjustment,
+                                v.x,
+                                max_w,
+                                content,
+                            );
+                            //ts.x_off -= v.x;
                         }
-                    }
-
-                    // Graphics state
-                    "cm" => {
-                        let a = op.operands[0].as_float().unwrap();
-                        let b = op.operands[1].as_float().unwrap();
-                        let c = op.operands[2].as_float().unwrap();
-                        let d = op.operands[3].as_float().unwrap();
-                        let e = op.operands[4].as_float().unwrap();
-                        let f = op.operands[5].as_float().unwrap();
-                        let gs = graphics_states.last_mut().unwrap();
-                        gs.transform = Transform::new(a, b, c, d, e, f);
-                        log::info!("set graphics transform {:?}", gs.transform);
-                    }
-                    "j" => {
-                        let gs = graphics_states.last_mut().unwrap();
-                        gs.line_join_style = op.operands[0].as_i64().unwrap();
-                        log::info!("set line join style {}", gs.line_join_style);
-                    }
-                    "q" => {
-                        log::info!("save graphics state");
-                        let gs = graphics_states.last().cloned().unwrap_or_default();
-                        graphics_states.push(gs);
-                    }
-                    "Q" => {
-                        log::info!("restore graphics state");
-                        graphics_states.pop();
-                    }
-                    "w" => {
-                        let gs = graphics_states.last_mut().unwrap();
-                        gs.line_width = op.operands[0].as_float().unwrap();
-                        log::info!("set line width {}", gs.line_width);
-                    }
-
-                    // Color
-                    "cs" => {
-                        color_space_fill = op.operands[0].as_name_str().unwrap().to_string();
-                        log::info!("color space (fill) {color_space_fill}");
-                    }
-                    "CS" => {
-                        color_space_stroke = op.operands[0].as_name_str().unwrap().to_string();
-                        log::info!("color space (stroke) {color_space_stroke}");
-                    }
-                    "g" => {
-                        color_space_fill = "DeviceGray".to_string();
-                        color_fill = op.operands.clone();
-                        log::info!("color (fill) {color_fill:?}");
-                    }
-                    "G" => {
-                        color_space_stroke = "DeviceGray".to_string();
-                        color_stroke = op.operands.clone();
-                        log::info!("color (stroke) {color_stroke:?}");
-                    }
-                    "k" => {
-                        color_space_fill = "DeviceCMYK".to_string();
-                        color_fill = op.operands.clone();
-                        log::info!("color (fill) {color_fill:?}");
-                    }
-                    "K" => {
-                        color_space_stroke = "DeviceCMYK".to_string();
-                        color_stroke = op.operands.clone();
-                        log::info!("color (stroke) {color_stroke:?}");
-                    }
-                    "rg" => {
-                        color_space_fill = "DeviceRGB".to_string();
-                        color_fill = op.operands.clone();
-                        log::info!("color (fill) {color_fill:?}");
-                    }
-                    "RG" => {
-                        color_space_stroke = "DeviceRGB".to_string();
-                        color_stroke = op.operands.clone();
-                        log::info!("color (stroke) {color_stroke:?}");
-                    }
-                    "scn" => {
-                        color_fill = op.operands.clone();
-                        log::info!("color (fill) {color_fill:?}");
-                    }
-                    "SCN" => {
-                        color_stroke = op.operands.clone();
-                        log::info!("color (stroke) {color_stroke:?}");
-                    }
-                    _ => {
-                        log::warn!("unknown op {:?}", op);
+                        None => {
+                            //TODO: is this a problem?
+                        }
                     }
                 }
             }
+
+            // Graphics state
+            "cm" => {
+                let a = op.operands[0].as_float().unwrap();
+                let b = op.operands[1].as_float().unwrap();
+                let c = op.operands[2].as_float().unwrap();
+                let d = op.operands[3].as_float().unwrap();
+                let e = op.operands[4].as_float().unwrap();
+                let f = op.operands[5].as_float().unwrap();
+                let gs = graphics_states.last_mut().unwrap();
+                gs.transform = Transform::new(a, b, c, d, e, f);
+                log::info!("set graphics transform {:?}", gs.transform);
+            }
+            "j" => {
+                let gs = graphics_states.last_mut().unwrap();
+                gs.line_join_style = op.operands[0].as_i64().unwrap();
+                log::info!("set line join style {}", gs.line_join_style);
+            }
+            "q" => {
+                log::info!("save graphics state");
+                let gs = graphics_states.last().cloned().unwrap_or_default();
+                graphics_states.push(gs);
+            }
+            "Q" => {
+                log::info!("restore graphics state");
+                graphics_states.pop();
+            }
+            "w" => {
+                let gs = graphics_states.last_mut().unwrap();
+                gs.line_width = op.operands[0].as_float().unwrap();
+                log::info!("set line width {}", gs.line_width);
+            }
+
+            // Color
+            "cs" => {
+                color_space_fill = op.operands[0].as_name_str().unwrap().to_string();
+                log::info!("color space (fill) {color_space_fill}");
+            }
+            "CS" => {
+                color_space_stroke = op.operands[0].as_name_str().unwrap().to_string();
+                log::info!("color space (stroke) {color_space_stroke}");
+            }
+            "g" => {
+                color_space_fill = "DeviceGray".to_string();
+                color_fill = op.operands.clone();
+                log::info!("color (fill) {color_fill:?}");
+            }
+            "G" => {
+                color_space_stroke = "DeviceGray".to_string();
+                color_stroke = op.operands.clone();
+                log::info!("color (stroke) {color_stroke:?}");
+            }
+            "k" => {
+                color_space_fill = "DeviceCMYK".to_string();
+                color_fill = op.operands.clone();
+                log::info!("color (fill) {color_fill:?}");
+            }
+            "K" => {
+                color_space_stroke = "DeviceCMYK".to_string();
+                color_stroke = op.operands.clone();
+                log::info!("color (stroke) {color_stroke:?}");
+            }
+            "rg" => {
+                color_space_fill = "DeviceRGB".to_string();
+                color_fill = op.operands.clone();
+                log::info!("color (fill) {color_fill:?}");
+            }
+            "RG" => {
+                color_space_stroke = "DeviceRGB".to_string();
+                color_stroke = op.operands.clone();
+                log::info!("color (stroke) {color_stroke:?}");
+            }
+            "scn" => {
+                color_fill = op.operands.clone();
+                log::info!("color (fill) {color_fill:?}");
+            }
+            "SCN" => {
+                color_stroke = op.operands.clone();
+                log::info!("color (stroke) {color_stroke:?}");
+            }
+            _ => {
+                log::warn!("unknown op {:?}", op);
+            }
         }
-        Err(_err) => {}
     }
 
-    Ok(())
+    page_ops
 }
