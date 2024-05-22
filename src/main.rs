@@ -4,11 +4,7 @@ use cosmic::{
     iced::{
         keyboard::{self, key::Named, Key},
         mouse::Cursor,
-        widget::canvas::{
-            self,
-            event::Status,
-            path::lyon_path::geom::euclid::{Transform2D, UnknownUnit},
-        },
+        widget::canvas::{self, event::Status},
         Length, Rectangle,
     },
     iced_renderer,
@@ -46,8 +42,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cosmic::app::run::<App>(Settings::default(), Flags { doc })?;
     Ok(())
 }
-
-type Transform = Transform2D<f32, UnknownUnit, UnknownUnit>;
 
 struct Flags {
     doc: Document,
