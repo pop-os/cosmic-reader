@@ -9,6 +9,8 @@ color_space = "0.5"
 env_logger = "0.11"
 log = "0.4"
 lopdf = "0.32"
+#TODO: export ttf-parser in fontdb?
+ttf-parser = "0.20"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"

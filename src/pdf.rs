@@ -2,7 +2,7 @@ use cosmic::{
     iced::{
         advanced::graphics::text::{
             self,
-            cosmic_text::{self, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight},
+            cosmic_text::{self, fontdb, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight},
         },
         alignment::{Horizontal, Vertical},
         keyboard,
@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
     mem, str,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use crate::text::Text;
@@ -145,6 +145,87 @@ pub struct PageOp {
     pub stroke: Option<canvas::Stroke<'static>>,
 }
 
+fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
+    let mut font_system = text::font_system().write().expect("Write font system");
+
+    for (name_bytes, font) in fonts.iter() {
+        let name = match str::from_utf8(name_bytes) {
+            Ok(ok) => ok,
+            Err(err) => {
+                log::warn!("failed to parse font name {name_bytes:?}: {err}");
+                continue;
+            }
+        };
+        log::info!("font {name:?} {font:?}");
+
+        let desc = match font
+            .get_deref(b"FontDescriptor", doc)
+            .and_then(|x| x.as_dict())
+        {
+            Ok(ok) => ok,
+            Err(err) => {
+                log::warn!("failed to find font descriptor for font {name:?}: {err}");
+                continue;
+            }
+        };
+        log::info!("desc {desc:?}");
+
+        match desc
+            .get_deref(b"FontFile2", doc)
+            .and_then(|x| x.as_stream())
+        {
+            Ok(stream_raw) => {
+                let mut stream = stream_raw.clone();
+                stream.decompress();
+
+                let data = Arc::new(stream.content);
+                let n = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+                for index in 0..n {
+                    match crate::ttf::parse_face_info(
+                        fontdb::Source::Binary(data.clone()),
+                        &data,
+                        index,
+                        || match font.get(b"BaseFont").and_then(|x| x.as_name_str()) {
+                            Ok(base_font) => Some((
+                                vec![(
+                                    base_font.to_string(),
+                                    ttf_parser::Language::English_UnitedStates,
+                                )],
+                                base_font.to_string(),
+                            )),
+                            Err(err) => {
+                                log::error!("failed to get BaseFont for font {name:?}: {err}");
+                                None
+                            }
+                        },
+                    ) {
+                        Ok(info) => {
+                            log::info!(
+                                "loaded font face {:?} for font {name:?}",
+                                info.post_script_name
+                            );
+                            font_system.raw().db_mut().push_face_info(info);
+                        }
+                        Err(e) => {
+                            log::warn!("failed to load a font face {index} for font {name:?}: {e}.")
+                        }
+                    }
+                }
+                log::info!("loaded font {name:?} with {n} faces");
+            }
+            Err(err) => {
+                log::warn!("failed to find FontFile2 for font {name:?}: {err}");
+            }
+        }
+    }
+
+    for face in font_system.raw().db().faces() {
+        if let fontdb::Source::Binary(_) = face.source {
+            log::info!("added font: {:?}", face.post_script_name);
+        }
+    }
+}
+
 pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
     let mut page_ops = Vec::new();
     let content = match doc.get_and_decode_page_content(page_id) {
@@ -156,7 +237,9 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
     };
 
     let fonts = doc.get_page_fonts(page_id);
-    println!("{:#?}", fonts);
+    //println!("{:#?}", fonts);
+    load_fonts(doc, &fonts);
+
     let (res_dict, res_vec) = doc.get_page_resources(page_id);
     println!("{:#?}", res_dict);
     println!("{:#?}", res_vec);
@@ -363,14 +446,30 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                         match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
                             Ok(base_font) => {
                                 log::info!("BaseFont {:?}", base_font);
-                                let mut split = base_font.splitn(2, '+');
-                                let first = split.next().unwrap_or_default();
-                                let (tag, ps_name) = match split.next() {
-                                    Some(some) => (first, some),
-                                    None => ("", first),
-                                };
-                                log::info!("tag {tag:?} PostScript name {ps_name:?}");
-                                //TODO: do something with font information
+
+                                //TODO: get ID after inserting fonts?
+                                let mut font_system =
+                                    text::font_system().write().expect("Write font system");
+                                let mut found = false;
+                                for face in font_system.raw().db().faces() {
+                                    if face.post_script_name == base_font {
+                                        log::info!(
+                                            "found font {name:?} by postscript name {base_font:?}"
+                                        );
+
+                                        attrs.family_owned =
+                                            FamilyOwned::Name(face.families[0].0.clone());
+                                        attrs.stretch = face.stretch;
+                                        attrs.style = face.style;
+                                        attrs.weight = face.weight;
+
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if !found {
+                                    log::warn!("failed to find font {name:?} by postscript name {base_font:?}");
+                                }
                             }
                             Err(err) => {
                                 log::error!("failed to get BaseFont for font {name:?}: {err}");
@@ -386,6 +485,12 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 ts.encoding = encoding;
                 ts.attrs = attrs;
                 ts.size = size;
+                log::info!(
+                    "encoding {:?} attrs {:?} size {:?}",
+                    ts.encoding,
+                    ts.attrs,
+                    ts.size
+                );
             }
             "TL" => {
                 let leading = op.operands[0].as_float().unwrap();
