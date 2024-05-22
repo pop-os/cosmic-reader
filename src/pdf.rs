@@ -201,8 +201,12 @@ fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
                     ) {
                         Ok(info) => {
                             log::info!(
-                                "loaded font face {:?} for font {name:?}",
-                                info.post_script_name
+                                "loaded font face {:?} for font {name:?}: {:?} {:?} {:?} {:?}",
+                                info.post_script_name,
+                                info.families,
+                                info.stretch,
+                                info.style,
+                                info.weight,
                             );
                             font_system.raw().db_mut().push_face_info(info);
                         }
