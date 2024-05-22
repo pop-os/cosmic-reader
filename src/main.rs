@@ -189,10 +189,10 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                         *state = CanvasState::default();
                     }
                     Key::Named(Named::ArrowUp) => {
-                        state.translate.y += 16.0;
+                        state.translate.y -= 16.0;
                     }
                     Key::Named(Named::ArrowDown) => {
-                        state.translate.y -= 16.0;
+                        state.translate.y += 16.0;
                     }
                     Key::Named(Named::ArrowLeft) => {
                         state.translate.x += 16.0;
@@ -225,11 +225,6 @@ impl canvas::Program<Message, Theme, Renderer> for App {
         _cursor: Cursor,
     ) -> Vec<iced_renderer::Geometry> {
         let geo = self.canvas_cache.draw(renderer, bounds.size(), |frame| {
-            frame.fill_rectangle(Point::new(0.0, 0.0), frame.size(), Color::WHITE);
-            frame.translate(Vector::new(0.0, frame.size().height));
-            frame.scale_nonuniform(state.scale);
-            frame.translate(state.translate);
-
             if let Some(page_id) = self.nav_model.active_data::<ObjectId>() {
                 let doc = &self.flags.doc;
                 let page_dict = doc.get_object(*page_id).and_then(|obj| obj.as_dict());
@@ -252,6 +247,14 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                 println!("{:#?}", fonts);
                 let resources = doc.get_page_resources(*page_id);
                 println!("{:#?}", resources);
+
+                frame.translate(Vector::new(0.0, frame.size().height));
+                frame.scale_nonuniform(state.scale);
+                frame.translate(state.translate);
+                if let Some(rect) = media_box {
+                    frame.fill_rectangle(rect.position(), rect.size(), Color::WHITE);
+                }
+
                 match doc.get_and_decode_page_content(*page_id) {
                     Ok(content) => {
                         let mut color_space_fill = "DeviceGray".to_string();
