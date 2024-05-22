@@ -4,11 +4,13 @@ use cosmic::{
     iced::{
         advanced::graphics::text::{self, cosmic_text},
         alignment::{Horizontal, Vertical},
-        mouse::Cursor,
+        keyboard::{self, key::Named, Key},
+        mouse::{self, Cursor},
         widget::{
             canvas::{
                 self,
-                path::lyon_path::geom::euclid::{Transform2D, UnknownUnit},
+                event::Status,
+                path::lyon_path::geom::euclid::{Transform2D, UnknownUnit, Vector2D},
             },
             text::{LineHeight, Shaping},
         },
@@ -55,7 +57,9 @@ struct Flags {
 }
 
 #[derive(Clone, Debug)]
-enum Message {}
+enum Message {
+    CanvasClearCache,
+}
 
 //TODO: errors
 fn convert_color(color_space: &str, color: &[Object]) -> Color {
@@ -142,6 +146,20 @@ impl Default for TextState {
     }
 }
 
+struct CanvasState {
+    scale: Vector,
+    translate: Vector,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        Self {
+            scale: Vector::new(1.0, -1.0),
+            translate: Vector::new(0.0, 0.0),
+        }
+    }
+}
+
 struct App {
     core: Core,
     flags: Flags,
@@ -150,10 +168,57 @@ struct App {
 }
 
 impl canvas::Program<Message, Theme, Renderer> for App {
-    type State = ();
+    type State = CanvasState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: canvas::Event,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> (Status, Option<Message>) {
+        match event {
+            canvas::Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                location,
+                modifiers,
+                text,
+            }) => {
+                match key {
+                    Key::Named(Named::Home) => {
+                        *state = CanvasState::default();
+                    }
+                    Key::Named(Named::ArrowUp) => {
+                        state.translate.y += 16.0;
+                    }
+                    Key::Named(Named::ArrowDown) => {
+                        state.translate.y -= 16.0;
+                    }
+                    Key::Named(Named::ArrowLeft) => {
+                        state.translate.x += 16.0;
+                    }
+                    Key::Named(Named::ArrowRight) => {
+                        state.translate.x -= 16.0;
+                    }
+                    Key::Named(Named::PageUp) => {
+                        state.scale.x *= 1.1;
+                        state.scale.y = -state.scale.x;
+                    }
+                    Key::Named(Named::PageDown) => {
+                        state.scale.x /= 1.1;
+                        state.scale.y = -state.scale.x;
+                    }
+                    _ => return (Status::Ignored, None),
+                }
+                (Status::Captured, Some(Message::CanvasClearCache))
+            }
+            _ => (Status::Ignored, None),
+        }
+    }
+
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
@@ -161,15 +226,33 @@ impl canvas::Program<Message, Theme, Renderer> for App {
     ) -> Vec<iced_renderer::Geometry> {
         let geo = self.canvas_cache.draw(renderer, bounds.size(), |frame| {
             frame.fill_rectangle(Point::new(0.0, 0.0), frame.size(), Color::WHITE);
-            frame.scale_nonuniform(Vector::new(1.0, -1.0));
-            frame.translate(Vector::new(0.0, -frame.size().height));
+            frame.translate(Vector::new(0.0, frame.size().height));
+            frame.scale_nonuniform(state.scale);
+            frame.translate(state.translate);
 
             if let Some(page_id) = self.nav_model.active_data::<ObjectId>() {
-                let fonts = self.flags.doc.get_page_fonts(*page_id);
+                let doc = &self.flags.doc;
+                let page_dict = doc.get_object(*page_id).and_then(|obj| obj.as_dict());
+                println!("{:#?}", page_dict);
+                let media_box = page_dict.ok().and_then(|dict| {
+                    let rect = dict.get(b"MediaBox").ok()?.as_array().ok()?;
+                    Some(Rectangle::new(
+                        Point::new(
+                            rect.get(0)?.as_float().ok()?,
+                            rect.get(1)?.as_float().ok()?
+                        ),
+                        Size::new(
+                            rect.get(2)?.as_float().ok()?,
+                            rect.get(3)?.as_float().ok()?
+                        ),
+                    ))
+                });
+                println!("{:#?}", media_box);
+                let fonts = doc.get_page_fonts(*page_id);
                 println!("{:#?}", fonts);
-                let resources = self.flags.doc.get_page_resources(*page_id);
+                let resources = doc.get_page_resources(*page_id);
                 println!("{:#?}", resources);
-                match self.flags.doc.get_and_decode_page_content(*page_id) {
+                match doc.get_and_decode_page_content(*page_id) {
                     Ok(content) => {
                         let mut color_space_fill = "DeviceGray".to_string();
                         let mut color_fill = vec![Object::Real(0.0)];
@@ -325,7 +408,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                                     let ts = text_states.last_mut().unwrap();
                                     ts.x_line += x;
                                     ts.x_off = 0.0;
-                                    ts.y_line += y;
+                                    ts.y_line -= y;
                                     ts.y_off = 0.0;
                                 }
                                 "TD" => {
@@ -337,7 +420,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                                     let ts = text_states.last_mut().unwrap();
                                     ts.x_line += x;
                                     ts.x_off = 0.0;
-                                    ts.y_line += y;
+                                    ts.y_line -= y;
                                     ts.y_off = 0.0;
                                     ts.leading = -y;
                                 }
@@ -380,7 +463,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                                     };
                                     let mut i = 0;
                                     while i < elements.len() {
-                                        let content = elements[i].as_string().unwrap().to_string();
+                                        let content = elements[i].as_string().unwrap();
                                         i += 1;
                                         let adjustment = if has_adjustment && i < elements.len() {
                                             let adjustment = elements[i].as_float().unwrap();
@@ -390,11 +473,11 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                                             0.0
                                         };
                                         //TODO: fill or stroke?
-                                        let stroke = true;
+                                        let stroke = false;
                                         //TODO: set all of these parameters
                                         let mut ts = text_states.last_mut().unwrap();
                                         let text = canvas::Text {
-                                            content,
+                                            content: content.to_string(),
                                             position: Point::new(
                                                 ts.x_line + ts.x_off,
                                                 ts.y_line + ts.y_off - ts.size,
@@ -453,7 +536,28 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                                                     max_w = layout_line.w;
                                                 }
                                             }
-                                            ts.x_off += max_w - adjustment;
+                                            ts.x_off += max_w;
+                                            //TODO: why does adjustment need to be inverse transformed?
+                                            match ts.transform.inverse().map(|x| {
+                                                x.transform_vector(Vector2D::new(adjustment, 0.0))
+                                            }) {
+                                                Some(v) => {
+                                                    //TODO: v.y?
+                                                    log::info!(
+                                                        "line {} off {} adj {} trans {} max_w {} content {:?}",
+                                                        ts.x_line,
+                                                        ts.x_off,
+                                                        adjustment,
+                                                        v.x,
+                                                        max_w,
+                                                        content,
+                                                    );
+                                                    //ts.x_off -= v.x;
+                                                }
+                                                None => {
+                                                    //TODO: is this a problem?
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -599,7 +703,11 @@ impl Application for App {
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
-        match message {}
+        match message {
+            Message::CanvasClearCache => {
+                self.canvas_cache.clear();
+            }
+        }
         Command::none()
     }
 
