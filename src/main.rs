@@ -3,6 +3,7 @@ use cosmic::{
     executor,
     iced::{
         keyboard::{self, key::Named, Key},
+        mouse,
         mouse::Cursor,
         widget::canvas::{self, event::Status},
         Length, Rectangle,
@@ -15,6 +16,7 @@ use lopdf::{Document, ObjectId};
 use std::env;
 
 mod pdf;
+mod text;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -67,7 +69,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
         state: &mut Self::State,
         event: canvas::Event,
         bounds: Rectangle,
-        _cursor: Cursor,
+        cursor: Cursor,
     ) -> (Status, Option<Message>) {
         match event {
             canvas::Event::Keyboard(keyboard::Event::KeyPressed {
@@ -79,6 +81,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                 match key {
                     Key::Named(Named::Home) => {
                         *state = pdf::CanvasState::default();
+                        state.modifiers = modifiers;
                     }
                     Key::Named(Named::ArrowUp) => {
                         state.translate.y -= 16.0;
@@ -103,6 +106,31 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                     _ => return (Status::Ignored, None),
                 }
                 (Status::Captured, Some(Message::CanvasClearCache))
+            }
+            canvas::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                state.modifiers = modifiers;
+                (Status::Captured, None)
+            }
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                if let Some(pos) = cursor.position_in(bounds) {
+                    let (x, y) = match delta {
+                        mouse::ScrollDelta::Lines { x, y } => {
+                            //TODO: best value to translate line scroll to pixels
+                            (x * 16.0, y * 16.0)
+                        }
+                        mouse::ScrollDelta::Pixels { x, y } => (x, y),
+                    };
+                    if state.modifiers.contains(keyboard::Modifiers::CTRL) {
+                        state.scale.x *= 1.1f32.powf(y / 16.0);
+                        state.scale.y = -state.scale.x;
+                    } else {
+                        state.translate.x += x;
+                        state.translate.y -= y;
+                    }
+                    (Status::Captured, Some(Message::CanvasClearCache))
+                } else {
+                    (Status::Ignored, None)
+                }
             }
             _ => (Status::Ignored, None),
         }

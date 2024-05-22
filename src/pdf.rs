@@ -2,6 +2,7 @@ use cosmic::{
     iced::{
         advanced::graphics::text::{self, cosmic_text},
         alignment::{Horizontal, Vertical},
+        keyboard,
         widget::{
             canvas::{
                 self,
@@ -13,8 +14,10 @@ use cosmic::{
     },
     iced_renderer::geometry::Frame,
 };
-use lopdf::{Document, Object, ObjectId};
-use std::{error::Error, mem};
+use lopdf::{Dictionary, Document, Object, ObjectId};
+use std::{collections::BTreeMap, error::Error, mem, str};
+
+use crate::text::Text;
 
 type Transform = Transform2D<f32, UnknownUnit, UnknownUnit>;
 
@@ -41,6 +44,8 @@ struct TextState {
     x_off: f32,
     y_line: f32,
     y_off: f32,
+    encoding: Option<String>,
+    font: Font,
     size: f32,
     leading: f32,
     mode: i64,
@@ -54,6 +59,8 @@ impl Default for TextState {
             x_off: 0.0,
             y_line: 0.0,
             y_off: 0.0,
+            encoding: None,
+            font: Font::DEFAULT,
             size: 0.0,
             leading: 0.0,
             mode: 0,
@@ -65,6 +72,7 @@ impl Default for TextState {
 pub struct CanvasState {
     pub scale: Vector,
     pub translate: Vector,
+    pub modifiers: keyboard::Modifiers,
 }
 
 impl Default for CanvasState {
@@ -72,6 +80,7 @@ impl Default for CanvasState {
         Self {
             scale: Vector::new(1.0, -1.0),
             translate: Vector::new(0.0, 0.0),
+            modifiers: keyboard::Modifiers::empty(),
         }
     }
 }
@@ -127,6 +136,7 @@ pub fn draw_page(
     frame: &mut Frame,
     state: &CanvasState,
 ) -> Result<(), Box<dyn Error>> {
+    println!("{:#?}", doc.catalog());
     let page_dict = doc.get_object(page_id).and_then(|obj| obj.as_dict());
     println!("{:#?}", page_dict);
     let media_box = page_dict.ok().and_then(|dict| {
@@ -139,8 +149,9 @@ pub fn draw_page(
     println!("{:#?}", media_box);
     let fonts = doc.get_page_fonts(page_id);
     println!("{:#?}", fonts);
-    let resources = doc.get_page_resources(page_id);
-    println!("{:#?}", resources);
+    let (res_dict, res_vec) = doc.get_page_resources(page_id);
+    println!("{:#?}", res_dict);
+    println!("{:#?}", res_vec);
 
     frame.translate(Vector::new(0.0, frame.size().height));
     frame.scale_nonuniform(state.scale);
@@ -261,10 +272,47 @@ pub fn draw_page(
                     // Text state
                     "Tf" => {
                         //TODO: use font name
-                        let name = op.operands[0].as_name_str();
+                        let name = op.operands[0].as_name_str().unwrap();
                         let size = op.operands[1].as_float().unwrap();
                         log::info!("set font {name:?} size {size}");
+
+                        let mut encoding = None;
+                        let mut font = Font::DEFAULT;
+                        match fonts
+                            .iter()
+                            .find(|(font_name, _font_dict)| name.as_bytes() == *font_name)
+                        {
+                            Some((_font_name, font_dict)) => {
+                                log::info!("{:?}", font_dict);
+                                encoding = Some(font_dict.get_font_encoding().to_string());
+                                match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
+                                    Ok(base_font) => {
+                                        log::info!("BaseFont {:?}", base_font);
+                                        let mut split = base_font.splitn(2, '+');
+                                        let first = split.next().unwrap_or_default();
+                                        let (tag, ps_name) = match split.next() {
+                                            Some(some) => (first, some),
+                                            None => ("", first),
+                                        };
+                                        log::info!("tag {:?} PostScript name {:?}", tag, ps_name);
+                                        //TODO: do something with font information
+                                    }
+                                    Err(err) => {
+                                        log::error!(
+                                            "failed to get BaseFont for font {name:?}: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                            None => {
+                                log::error!("failed to find font {name:?}");
+                            }
+                        }
+
                         let ts = text_states.last_mut().unwrap();
+                        ts.encoding = encoding;
+                        ts.font = font;
                         ts.size = size;
                     }
                     "TL" => {
@@ -345,7 +393,11 @@ pub fn draw_page(
                         };
                         let mut i = 0;
                         while i < elements.len() {
-                            let content = elements[i].as_string().unwrap();
+                            let ts = text_states.last_mut().unwrap();
+                            let content = Document::decode_text(
+                                ts.encoding.as_deref(),
+                                elements[i].as_str().unwrap(),
+                            );
                             i += 1;
                             let adjustment = if has_adjustment && i < elements.len() {
                                 let adjustment = elements[i].as_float().unwrap();
@@ -357,8 +409,7 @@ pub fn draw_page(
                             //TODO: fill or stroke?
                             let stroke = false;
                             //TODO: set all of these parameters
-                            let ts = text_states.last_mut().unwrap();
-                            let text = canvas::Text {
+                            let text = Text {
                                 content: content.to_string(),
                                 position: Point::new(
                                     ts.x_line + ts.x_off,
@@ -371,12 +422,12 @@ pub fn draw_page(
                                 },
                                 size: Pixels(ts.size),
                                 line_height: LineHeight::Absolute(Pixels(ts.leading)),
-                                font: Font::DEFAULT,
+                                font: ts.font,
                                 horizontal_alignment: Horizontal::Left,
                                 vertical_alignment: Vertical::Top,
                                 shaping: Shaping::Advanced,
                             };
-                            text.draw_with(|mut path, color| {
+                            let max_w = text.draw_with(|mut path, color| {
                                 path = path
                                     .transform(&Transform::scale(1.0, -1.0))
                                     .transform(&ts.transform);
@@ -387,55 +438,28 @@ pub fn draw_page(
                                     frame.fill(&path, color);
                                 }
                             });
-                            //TODO: more efficient way to determine size
+                            ts.x_off += max_w;
+                            //TODO: why does adjustment need to be inverse transformed?
+                            match ts
+                                .transform
+                                .inverse()
+                                .map(|x| x.transform_vector(Vector2D::new(adjustment, 0.0)))
                             {
-                                let mut font_system =
-                                    text::font_system().write().expect("Write font system");
-
-                                let mut buffer = cosmic_text::BufferLine::new(
-                                    &text.content,
-                                    cosmic_text::LineEnding::default(),
-                                    cosmic_text::AttrsList::new(text::to_attributes(text.font)),
-                                    text::to_shaping(text.shaping),
-                                );
-
-                                let layout = buffer.layout(
-                                    font_system.raw(),
-                                    text.size.0,
-                                    f32::MAX,
-                                    cosmic_text::Wrap::None,
-                                    None,
-                                );
-
-                                let mut max_w = 0.0;
-                                for layout_line in layout {
-                                    if layout_line.w > max_w {
-                                        max_w = layout_line.w;
-                                    }
+                                Some(v) => {
+                                    //TODO: v.y?
+                                    log::info!(
+                                        "line {} off {} adj {} trans {} max_w {} content {:?}",
+                                        ts.x_line,
+                                        ts.x_off,
+                                        adjustment,
+                                        v.x,
+                                        max_w,
+                                        content,
+                                    );
+                                    //ts.x_off -= v.x;
                                 }
-                                ts.x_off += max_w;
-                                //TODO: why does adjustment need to be inverse transformed?
-                                match ts
-                                    .transform
-                                    .inverse()
-                                    .map(|x| x.transform_vector(Vector2D::new(adjustment, 0.0)))
-                                {
-                                    Some(v) => {
-                                        //TODO: v.y?
-                                        log::info!(
-                                            "line {} off {} adj {} trans {} max_w {} content {:?}",
-                                            ts.x_line,
-                                            ts.x_off,
-                                            adjustment,
-                                            v.x,
-                                            max_w,
-                                            content,
-                                        );
-                                        //ts.x_off -= v.x;
-                                    }
-                                    None => {
-                                        //TODO: is this a problem?
-                                    }
+                                None => {
+                                    //TODO: is this a problem?
                                 }
                             }
                         }
