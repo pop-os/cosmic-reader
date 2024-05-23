@@ -33,6 +33,11 @@ type Transform = Transform2D<f32, UnknownUnit, UnknownUnit>;
 struct GraphicsState {
     line_join_style: i64,
     line_width: f32,
+    text_attrs: AttrsOwned,
+    text_encoding: Option<String>,
+    text_leading: f32,
+    text_mode: i64,
+    text_size: f32,
     transform: Transform,
 }
 
@@ -41,6 +46,11 @@ impl Default for GraphicsState {
         Self {
             line_join_style: 0,
             line_width: 1.0,
+            text_attrs: AttrsOwned::new(Attrs::new()),
+            text_encoding: None,
+            text_leading: 0.0,
+            text_mode: 0,
+            text_size: 0.0,
             transform: Transform::identity(),
         }
     }
@@ -52,11 +62,6 @@ struct TextState {
     x_off: f32,
     y_line: f32,
     y_off: f32,
-    encoding: Option<String>,
-    attrs: AttrsOwned,
-    size: f32,
-    leading: f32,
-    mode: i64,
     transform: Transform,
 }
 
@@ -67,11 +72,6 @@ impl Default for TextState {
             x_off: 0.0,
             y_line: 0.0,
             y_off: 0.0,
-            encoding: None,
-            attrs: AttrsOwned::new(Attrs::new()),
-            size: 0.0,
-            leading: 0.0,
-            mode: 0,
             transform: Transform::identity(),
         }
     }
@@ -485,22 +485,22 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     }
                 }
 
-                let ts = text_states.last_mut().unwrap();
-                ts.encoding = encoding;
-                ts.attrs = attrs;
-                ts.size = size;
+                let gs = graphics_states.last_mut().unwrap();
+                gs.text_encoding = encoding;
+                gs.text_attrs = attrs;
+                gs.text_size = size;
                 log::info!(
                     "encoding {:?} attrs {:?} size {:?}",
-                    ts.encoding,
-                    ts.attrs,
-                    ts.size
+                    gs.text_encoding,
+                    gs.text_attrs,
+                    gs.text_size
                 );
             }
             "TL" => {
                 let leading = op.operands[0].as_float().unwrap();
                 log::info!("set text leading {leading}");
-                let ts = text_states.last_mut().unwrap();
-                ts.leading = leading;
+                let gs = graphics_states.last_mut().unwrap();
+                gs.text_leading = leading;
             }
             "Ts" => {
                 let rise = op.operands[0].as_float().unwrap();
@@ -512,9 +512,10 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
             // Text positioning
             "T*" => {
                 log::info!("move to start of next line");
+                let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
                 ts.x_off = 0.0;
-                ts.y_line += ts.leading;
+                ts.y_line += gs.text_leading;
                 ts.y_off = 0.0;
             }
             "Td" => {
@@ -531,12 +532,13 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 let x = op.operands[0].as_float().unwrap();
                 let y = op.operands[1].as_float().unwrap();
                 log::info!("move to start of next line {x}, {y} and set leading");
+                let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
                 ts.x_line += x;
                 ts.x_off = 0.0;
                 ts.y_line -= y;
                 ts.y_off = 0.0;
-                ts.leading = -y;
+                gs.text_leading = -y;
             }
             "Tm" => {
                 let a = op.operands[0].as_float().unwrap();
@@ -574,9 +576,10 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 };
                 let mut i = 0;
                 while i < elements.len() {
+                    let gs = graphics_states.last_mut().unwrap();
                     let ts = text_states.last_mut().unwrap();
                     let content = Document::decode_text(
-                        ts.encoding.as_deref(),
+                        gs.text_encoding.as_deref(),
                         elements[i].as_str().unwrap(),
                     );
                     i += 1;
@@ -592,15 +595,18 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     //TODO: set all of these parameters
                     let text = Text {
                         content: content.to_string(),
-                        position: Point::new(ts.x_line + ts.x_off, ts.y_line + ts.y_off - ts.size),
+                        position: Point::new(
+                            ts.x_line + ts.x_off,
+                            ts.y_line + ts.y_off - gs.text_size,
+                        ),
                         color: if stroke {
                             convert_color(&color_space_stroke, &color_stroke)
                         } else {
                             convert_color(&color_space_fill, &color_fill)
                         },
-                        size: Pixels(ts.size),
-                        line_height: LineHeight::Absolute(Pixels(ts.leading)),
-                        attrs: ts.attrs.clone(),
+                        size: Pixels(gs.text_size),
+                        line_height: LineHeight::Absolute(Pixels(gs.text_leading)),
+                        attrs: gs.text_attrs.clone(),
                         horizontal_alignment: Horizontal::Left,
                         vertical_alignment: Vertical::Top,
                         shaping: Shaping::Advanced,
