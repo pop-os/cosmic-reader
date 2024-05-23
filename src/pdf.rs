@@ -58,9 +58,7 @@ impl Default for GraphicsState {
 
 #[derive(Clone, Debug)]
 struct TextState {
-    x_line: f32,
     x_off: f32,
-    y_line: f32,
     y_off: f32,
     transform: Transform,
 }
@@ -68,9 +66,7 @@ struct TextState {
 impl Default for TextState {
     fn default() -> Self {
         Self {
-            x_line: 0.0,
             x_off: 0.0,
-            y_line: 0.0,
             y_off: 0.0,
             transform: Transform::identity(),
         }
@@ -514,8 +510,10 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 log::info!("move to start of next line");
                 let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
+                ts.transform = ts
+                    .transform
+                    .pre_translate(Vector2D::new(0.0, -gs.text_leading));
                 ts.x_off = 0.0;
-                ts.y_line += gs.text_leading;
                 ts.y_off = 0.0;
             }
             "Td" => {
@@ -523,9 +521,8 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 let y = op.operands[1].as_float().unwrap();
                 log::info!("move to start of next line {x}, {y}");
                 let ts = text_states.last_mut().unwrap();
-                ts.x_line += x;
+                ts.transform = ts.transform.pre_translate(Vector2D::new(x, y));
                 ts.x_off = 0.0;
-                ts.y_line -= y;
                 ts.y_off = 0.0;
             }
             "TD" => {
@@ -534,11 +531,9 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 log::info!("move to start of next line {x}, {y} and set leading");
                 let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
-                ts.x_line += x;
+                ts.transform = ts.transform.pre_translate(Vector2D::new(x, y));
                 ts.x_off = 0.0;
-                ts.y_line -= y;
                 ts.y_off = 0.0;
-                gs.text_leading = -y;
             }
             "Tm" => {
                 let a = op.operands[0].as_float().unwrap();
@@ -595,10 +590,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     //TODO: set all of these parameters
                     let text = Text {
                         content: content.to_string(),
-                        position: Point::new(
-                            ts.x_line + ts.x_off,
-                            ts.y_line + ts.y_off - gs.text_size,
-                        ),
+                        position: Point::new(ts.x_off, ts.y_off - gs.text_size),
                         color: if stroke {
                             convert_color(&color_space_stroke, &color_stroke)
                         } else {
@@ -641,8 +633,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                         Some(v) => {
                             //TODO: v.y?
                             log::info!(
-                                "line {} off {} adj {} trans {} max_w {} content {:?}",
-                                ts.x_line,
+                                "off {} adj {} trans {} max_w {} content {:?}",
                                 ts.x_off,
                                 adjustment,
                                 v.x,
