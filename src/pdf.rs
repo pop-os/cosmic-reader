@@ -579,9 +579,12 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     );
                     i += 1;
                     let adjustment = if has_adjustment && i < elements.len() {
-                        let adjustment = elements[i].as_float().unwrap();
-                        i += 1;
-                        adjustment
+                        if let Ok(adjustment) = elements[i].as_float() {
+                            i += 1;
+                            adjustment
+                        } else {
+                            0.0
+                        }
                     } else {
                         0.0
                     };
