@@ -17,7 +17,7 @@ use cosmic::{
     },
     iced_renderer::geometry::Frame,
 };
-use lopdf::{Dictionary, Document, Object, ObjectId};
+use lopdf::{Dictionary, Document, Encoding, Object, ObjectId};
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
@@ -30,11 +30,11 @@ use crate::text::Text;
 type Transform = Transform2D<f32, UnknownUnit, UnknownUnit>;
 
 #[derive(Clone, Debug)]
-struct GraphicsState {
+struct GraphicsState<'a> {
     line_join_style: i64,
     line_width: f32,
     text_attrs: AttrsOwned,
-    text_encoding: Option<String>,
+    text_encoding: Option<Arc<Encoding<'a>>>,
     text_leading: f32,
     text_mode: i64,
     text_rise: f32,
@@ -42,7 +42,7 @@ struct GraphicsState {
     transform: Transform,
 }
 
-impl Default for GraphicsState {
+impl<'a> Default for GraphicsState<'a> {
     fn default() -> Self {
         Self {
             line_join_style: 0,
@@ -375,7 +375,13 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     Some((_font_name, font_dict)) => {
                         log::info!("{:?}", font_dict);
 
-                        encoding = Some(font_dict.get_font_encoding().to_string());
+                        encoding = match font_dict.get_font_encoding(doc) {
+                            Ok(ok) => Some(ok),
+                            Err(err) => {
+                                log::warn!("failed to get encoding: {:?}", err);
+                                None
+                            }
+                        };
 
                         match font_dict
                             .get_deref(b"FontDescriptor", doc)
@@ -489,7 +495,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 }
 
                 let gs = graphics_states.last_mut().unwrap();
-                gs.text_encoding = encoding;
+                gs.text_encoding = encoding.map(Arc::new);
                 gs.text_attrs = attrs;
                 gs.text_size = size;
                 log::info!(
@@ -578,7 +584,8 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     let content = Document::decode_text(
                         gs.text_encoding.as_deref(),
                         elements[i].as_str().unwrap(),
-                    );
+                    )
+                    .unwrap();
                     i += 1;
                     let adjustment = if has_adjustment && i < elements.len() {
                         if let Ok(adjustment) = elements[i].as_float() {
@@ -592,7 +599,6 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     };
                     //TODO: fill or stroke?
                     let stroke = false;
-                    //TODO: set all of these parameters
                     let text = Text {
                         content: content.to_string(),
                         //TODO: is this y coordinate correct?
