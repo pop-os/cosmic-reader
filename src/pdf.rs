@@ -37,6 +37,7 @@ struct GraphicsState {
     text_encoding: Option<String>,
     text_leading: f32,
     text_mode: i64,
+    text_rise: f32,
     text_size: f32,
     transform: Transform,
 }
@@ -50,6 +51,7 @@ impl Default for GraphicsState {
             text_encoding: None,
             text_leading: 0.0,
             text_mode: 0,
+            text_rise: 0.0,
             text_size: 0.0,
             transform: Transform::identity(),
         }
@@ -58,17 +60,22 @@ impl Default for GraphicsState {
 
 #[derive(Clone, Debug)]
 struct TextState {
-    x_off: f32,
-    y_off: f32,
-    transform: Transform,
+    cursor_tf: Transform,
+    line_tf: Transform,
+}
+
+impl TextState {
+    fn set_tf(&mut self, tf: Transform) {
+        self.cursor_tf = tf;
+        self.line_tf = tf;
+    }
 }
 
 impl Default for TextState {
     fn default() -> Self {
         Self {
-            x_off: 0.0,
-            y_off: 0.0,
-            transform: Transform::identity(),
+            cursor_tf: Transform::identity(),
+            line_tf: Transform::identity(),
         }
     }
 }
@@ -501,8 +508,8 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
             "Ts" => {
                 let rise = op.operands[0].as_float().unwrap();
                 log::info!("set text rise {rise}");
-                let ts = text_states.last_mut().unwrap();
-                ts.y_off = rise;
+                let gs = graphics_states.last_mut().unwrap();
+                gs.text_rise = rise;
             }
 
             // Text positioning
@@ -510,20 +517,17 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 log::info!("move to start of next line");
                 let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
-                ts.transform = ts
-                    .transform
-                    .pre_translate(Vector2D::new(0.0, -gs.text_leading));
-                ts.x_off = 0.0;
-                ts.y_off = 0.0;
+                ts.set_tf(
+                    ts.line_tf
+                        .pre_translate(Vector2D::new(0.0, -gs.text_leading)),
+                );
             }
             "Td" => {
                 let x = op.operands[0].as_float().unwrap();
                 let y = op.operands[1].as_float().unwrap();
                 log::info!("move to start of next line {x}, {y}");
                 let ts = text_states.last_mut().unwrap();
-                ts.transform = ts.transform.pre_translate(Vector2D::new(x, y));
-                ts.x_off = 0.0;
-                ts.y_off = 0.0;
+                ts.set_tf(ts.line_tf.pre_translate(Vector2D::new(x, y)));
             }
             "TD" => {
                 let x = op.operands[0].as_float().unwrap();
@@ -531,9 +535,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 log::info!("move to start of next line {x}, {y} and set leading");
                 let gs = graphics_states.last_mut().unwrap();
                 let ts = text_states.last_mut().unwrap();
-                ts.transform = ts.transform.pre_translate(Vector2D::new(x, y));
-                ts.x_off = 0.0;
-                ts.y_off = 0.0;
+                ts.set_tf(ts.line_tf.pre_translate(Vector2D::new(x, y)));
             }
             "Tm" => {
                 let a = op.operands[0].as_float().unwrap();
@@ -543,8 +545,8 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 let e = op.operands[4].as_float().unwrap();
                 let f = op.operands[5].as_float().unwrap();
                 let ts = text_states.last_mut().unwrap();
-                ts.transform = Transform::new(a, b, c, d, e, f);
-                log::info!("set text transform {:?}", ts.transform);
+                ts.set_tf(Transform::new(a, b, c, d, e, f));
+                log::info!("set text transform {:?}", ts.line_tf);
             }
 
             // Text showing
@@ -593,7 +595,8 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     //TODO: set all of these parameters
                     let text = Text {
                         content: content.to_string(),
-                        position: Point::new(ts.x_off, ts.y_off - gs.text_size),
+                        //TODO: is this y coordinate correct?
+                        position: Point::new(0.0, -gs.text_rise - gs.text_size),
                         color: if stroke {
                             convert_color(&color_space_stroke, &color_stroke)
                         } else {
@@ -609,7 +612,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     let max_w = text.draw_with(|mut path, color| {
                         path = path
                             .transform(&Transform::scale(1.0, -1.0))
-                            .transform(&ts.transform);
+                            .transform(&ts.cursor_tf);
                         page_ops.push(PageOp {
                             path,
                             //TODO: more fill options
@@ -626,29 +629,9 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                             },
                         });
                     });
-                    ts.x_off += max_w;
-                    //TODO: why does adjustment need to be inverse transformed?
-                    match ts
-                        .transform
-                        .inverse()
-                        .map(|x| x.transform_vector(Vector2D::new(adjustment, 0.0)))
-                    {
-                        Some(v) => {
-                            //TODO: v.y?
-                            log::info!(
-                                "off {} adj {} trans {} max_w {} content {:?}",
-                                ts.x_off,
-                                adjustment,
-                                v.x,
-                                max_w,
-                                content,
-                            );
-                            //ts.x_off -= v.x;
-                        }
-                        None => {
-                            //TODO: is this a problem?
-                        }
-                    }
+                    ts.cursor_tf = ts
+                        .cursor_tf
+                        .pre_translate(Vector2D::new(max_w - adjustment / 1000.0, 0.0));
                 }
             }
 
