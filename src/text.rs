@@ -57,6 +57,7 @@ impl Text {
             f32::MAX,
             cosmic_text::Wrap::None,
             None,
+            8,
         );
 
         let mut line_width = 0.0f32;
