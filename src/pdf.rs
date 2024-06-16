@@ -422,16 +422,22 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                     Ok(flags) => {
                                         if flags & (1 << 0) != 0 {
                                             // FixedPitch
-                                            attrs.family_owned = FamilyOwned::Monospace;
+                                            //TODO: needs to use courier compatible font: attrs.family_owned = FamilyOwned::Monospace;
+                                            attrs.family_owned =
+                                                FamilyOwned::Name("Liberation Mono".to_string());
                                         } else if flags & (1 << 1) != 0 {
                                             // Serif
-                                            attrs.family_owned = FamilyOwned::Serif;
+                                            //TODO: serif fallback is wrong, needs to use times new roman compatible font: attrs.family_owned = FamilyOwned::Serif;
+                                            attrs.family_owned =
+                                                FamilyOwned::Name("Liberation Serif".to_string());
                                         } else if flags & (1 << 3) != 0 {
                                             // Script
                                             attrs.family_owned = FamilyOwned::Cursive;
                                         } else {
                                             // Standard is sans-serif
-                                            attrs.family_owned = FamilyOwned::SansSerif;
+                                            //TODO: needs to use helvetica compatible font: attrs.family_owned = FamilyOwned::SansSerif;
+                                            attrs.family_owned =
+                                                FamilyOwned::Name("Liberation Sans".to_string());
                                         }
                                         if flags & (1 << 6) != 0 {
                                             // Italic
@@ -615,6 +621,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                         vertical_alignment: Vertical::Top,
                         shaping: Shaping::Advanced,
                     };
+                    log::debug!("{:?}", text);
                     let max_w = text.draw_with(|mut path, color| {
                         path = path
                             .transform(&Transform::scale(1.0, -1.0))
