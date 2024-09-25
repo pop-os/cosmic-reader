@@ -11,6 +11,7 @@ use cosmic::{
                 self,
                 path::lyon_path::geom::euclid::{Transform2D, UnknownUnit, Vector2D},
             },
+            image,
             text::{LineHeight, Shaping},
         },
         Color, Font, Pixels, Point, Rectangle, Size, Vector,
@@ -243,13 +244,20 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
         }
     };
 
-    let fonts = doc.get_page_fonts(page_id);
-    //println!("{:#?}", fonts);
+    let fonts = match doc.get_page_fonts(page_id) {
+        Ok(ok) => ok,
+        Err(err) => {
+            log::warn!("failed to load fonts for page {page_id:?}: {err}");
+            BTreeMap::new()
+        }
+    };
     load_fonts(doc, &fonts);
 
+    /*TODO
     let (res_dict, res_vec) = doc.get_page_resources(page_id);
     println!("{:#?}", res_dict);
     println!("{:#?}", res_vec);
+    */
 
     let mut color_space_fill = "DeviceGray".to_string();
     let mut color_fill = vec![Object::Real(0.0)];
@@ -424,12 +432,12 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                             // FixedPitch
                                             //TODO: needs to use courier compatible font: attrs.family_owned = FamilyOwned::Monospace;
                                             attrs.family_owned =
-                                                FamilyOwned::Name("Liberation Mono".to_string());
+                                                FamilyOwned::Name("Liberation Mono".into());
                                         } else if flags & (1 << 1) != 0 {
                                             // Serif
                                             //TODO: serif fallback is wrong, needs to use times new roman compatible font: attrs.family_owned = FamilyOwned::Serif;
                                             attrs.family_owned =
-                                                FamilyOwned::Name("Liberation Serif".to_string());
+                                                FamilyOwned::Name("Liberation Serif".into());
                                         } else if flags & (1 << 3) != 0 {
                                             // Script
                                             attrs.family_owned = FamilyOwned::Cursive;
@@ -437,7 +445,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                             // Standard is sans-serif
                                             //TODO: needs to use helvetica compatible font: attrs.family_owned = FamilyOwned::SansSerif;
                                             attrs.family_owned =
-                                                FamilyOwned::Name("Liberation Sans".to_string());
+                                                FamilyOwned::Name("Liberation Sans".into());
                                         }
                                         if flags & (1 << 6) != 0 {
                                             // Italic
@@ -449,8 +457,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
 
                                 match desc.get(b"FontFamily").and_then(|x| x.as_name_str()) {
                                     Ok(font_family) => {
-                                        attrs.family_owned =
-                                            FamilyOwned::Name(font_family.to_string());
+                                        attrs.family_owned = FamilyOwned::Name(font_family.into());
                                     }
                                     Err(_err) => {}
                                 }
@@ -477,7 +484,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                         );
 
                                         attrs.family_owned =
-                                            FamilyOwned::Name(face.families[0].0.clone());
+                                            FamilyOwned::Name(face.families[0].0.clone().into());
                                         attrs.stretch = face.stretch;
                                         attrs.style = face.style;
                                         attrs.weight = face.weight;
@@ -587,11 +594,12 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 while i < elements.len() {
                     let gs = graphics_states.last_mut().unwrap();
                     let ts = text_states.last_mut().unwrap();
-                    let content = Document::decode_text(
-                        gs.text_encoding.as_deref(),
-                        elements[i].as_str().unwrap(),
-                    )
-                    .unwrap();
+                    let content = match gs.text_encoding.as_deref() {
+                        Some(encoding) => {
+                            Document::decode_text(encoding, elements[i].as_str().unwrap()).unwrap()
+                        }
+                        None => elements[i].as_string().unwrap().to_string(),
+                    };
                     i += 1;
                     let adjustment = if has_adjustment && i < elements.len() {
                         if let Ok(adjustment) = elements[i].as_float() {
@@ -734,4 +742,33 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
     }
 
     page_ops
+}
+
+pub fn page_images(doc: &Document, page_id: ObjectId) -> Vec<image::Handle> {
+    let pdf_images = match doc.get_page_images(page_id) {
+        Ok(ok) => ok,
+        Err(err) => {
+            log::warn!("failed to get images for page {:?}: {}", page_id, err);
+            Vec::new()
+        }
+    };
+
+    let mut images = Vec::with_capacity(pdf_images.len());
+    for pdf_image in pdf_images {
+        log::info!(
+            "image id {:?}, size {}x{}, bits per channel {:?}, color space {:?}, filters {:?}, content length {}, dict {:?}",
+            pdf_image.id,
+            pdf_image.width,
+            pdf_image.height,
+            pdf_image.bits_per_component,
+            pdf_image.color_space,
+            pdf_image.filters,
+            pdf_image.content.len(),
+            pdf_image.origin_dict,
+        );
+        //TODO: use filter to determine image kind
+        images.push(image::Handle::from_memory(pdf_image.content.to_vec()));
+    }
+
+    images
 }

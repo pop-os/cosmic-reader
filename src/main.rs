@@ -9,7 +9,7 @@ use cosmic::{
         Color, Length, Point, Rectangle, Size, Vector,
     },
     iced_renderer,
-    widget::{self, nav_bar::Model},
+    widget::{self, image, nav_bar::Model},
     Application, Element, Renderer, Theme,
 };
 use lopdf::{Document, ObjectId};
@@ -60,7 +60,7 @@ struct App {
     flags: Flags,
     canvas_cache: canvas::Cache,
     nav_model: Model,
-    page_cache: Mutex<HashMap<ObjectId, Vec<pdf::PageOp>>>,
+    page_cache: Mutex<HashMap<ObjectId, (Vec<pdf::PageOp>, Vec<image::Handle>)>>,
 }
 
 impl canvas::Program<Message, Theme, Renderer> for App {
@@ -188,9 +188,9 @@ impl canvas::Program<Message, Theme, Renderer> for App {
 
                 {
                     let mut page_cache = self.page_cache.lock().unwrap();
-                    let ops = page_cache
-                        .entry(page_id)
-                        .or_insert_with(|| pdf::page_ops(doc, page_id));
+                    let (ops, images) = page_cache.entry(page_id).or_insert_with(|| {
+                        (pdf::page_ops(doc, page_id), pdf::page_images(doc, page_id))
+                    });
                     for op in ops.iter() {
                         if let Some(fill) = &op.fill {
                             frame.fill(&op.path, fill.clone());
@@ -198,6 +198,9 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                         if let Some(stroke) = &op.stroke {
                             frame.stroke(&op.path, stroke.clone());
                         }
+                    }
+                    for image in images.iter() {
+                        //TODO
                     }
                 }
             }
