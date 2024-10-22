@@ -9,7 +9,7 @@ use cosmic::{
         widget::{
             canvas::{
                 self,
-                path::lyon_path::geom::euclid::{Transform2D, UnknownUnit, Vector2D},
+                path::lyon_path::geom::euclid::{Point2D, Transform2D, UnknownUnit, Vector2D},
             },
             image,
             text::{LineHeight, Shaping},
@@ -57,6 +57,12 @@ impl<'a> Default for GraphicsState<'a> {
             transform: Transform::identity(),
         }
     }
+}
+
+pub struct Image {
+    pub name: String,
+    pub rect: Rectangle,
+    pub handle: image::Handle,
 }
 
 #[derive(Clone, Debug)]
@@ -144,9 +150,10 @@ fn finish_path(original: &mut canvas::path::Builder, transform: &Transform) -> c
 }
 
 pub struct PageOp {
-    pub path: canvas::Path,
+    pub path: Option<canvas::Path>,
     pub fill: Option<canvas::Fill>,
     pub stroke: Option<canvas::Stroke<'static>>,
+    pub image: Option<Image>,
 }
 
 fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
@@ -232,6 +239,59 @@ fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
             log::info!("added font: {:?}", face.post_script_name);
         }
     }
+}
+
+fn load_image(
+    doc: &Document,
+    page_id: ObjectId,
+    name: &str,
+) -> Result<(image::Handle, i64, i64), lopdf::Error> {
+    let page = doc.get_dictionary(page_id)?;
+    let resources = doc.get_dict_in_dict(page, b"Resources")?;
+    let xobject = doc.get_dict_in_dict(resources, b"XObject")?;
+    let xvalue = xobject.get(name.as_bytes())?;
+    let id = xvalue.as_reference()?;
+    let xvalue = doc.get_object(id)?;
+    let xvalue = xvalue.as_stream()?;
+    let dict = &xvalue.dict;
+    if dict.get(b"Subtype")?.as_name()? != b"Image" {
+        return Err(lopdf::Error::Type);
+    }
+    let width = dict.get(b"Width")?.as_i64()?;
+    let height = dict.get(b"Height")?.as_i64()?;
+    let color_space = match dict.get(b"ColorSpace") {
+        Ok(cs) => match cs {
+            Object::Array(array) => Some(String::from_utf8_lossy(array[0].as_name()?).to_string()),
+            Object::Name(name) => Some(String::from_utf8_lossy(name).to_string()),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    let bits_per_component = match dict.get(b"BitsPerComponent") {
+        Ok(bpc) => Some(bpc.as_i64()?),
+        Err(_) => None,
+    };
+    let mut filters = vec![];
+    if let Ok(filter) = dict.get(b"Filter") {
+        match filter {
+            Object::Array(array) => {
+                for obj in array.iter() {
+                    let name = obj.as_name()?;
+                    filters.push(String::from_utf8_lossy(name).to_string());
+                }
+            }
+            Object::Name(name) => {
+                filters.push(String::from_utf8_lossy(name).to_string());
+            }
+            _ => {}
+        }
+    };
+
+    Ok((
+        image::Handle::from_bytes(xvalue.content.clone()),
+        width,
+        height,
+    ))
 }
 
 pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
@@ -333,7 +393,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 }
                 let gs = graphics_states.last().unwrap();
                 page_ops.push(PageOp {
-                    path: finish_path(&mut p, &gs.transform),
+                    path: Some(finish_path(&mut p, &gs.transform)),
                     fill: if fill {
                         let mut f =
                             canvas::Fill::from(convert_color(&color_space_fill, &color_fill));
@@ -356,6 +416,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                     } else {
                         None
                     },
+                    image: None,
                 });
             }
 
@@ -635,7 +696,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                             .transform(&Transform::scale(1.0, -1.0))
                             .transform(&ts.cursor_tf);
                         page_ops.push(PageOp {
-                            path,
+                            path: Some(path),
                             //TODO: more fill options
                             fill: if !stroke {
                                 Some(canvas::Fill::from(color))
@@ -648,6 +709,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                             } else {
                                 None
                             },
+                            image: None,
                         });
                     });
                     ts.cursor_tf = ts
@@ -735,6 +797,36 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 color_stroke = op.operands.clone();
                 log::info!("color (stroke) {color_stroke:?}");
             }
+
+            // Object painting
+            "Do" => {
+                let name = op.operands[0].as_name_str().unwrap();
+                log::info!("image {name:?}");
+
+                match load_image(doc, page_id, name) {
+                    Ok((handle, width, height)) => {
+                        let gs = graphics_states.last().unwrap();
+                        let a = gs.transform.transform_point(Point2D::new(0.0, 0.0));
+                        let b = gs.transform.transform_point(Point2D::new(1.0, 1.0));
+                        page_ops.push(PageOp {
+                            path: None,
+                            fill: None,
+                            stroke: None,
+                            image: Some(Image { name: name.to_string(), handle, rect:
+                                //TODO: figure out corrrect rectangle
+                                Rectangle::new(
+                                    Point::new(a.x.min(b.x), a.y.max(b.y)),
+                                    Size::new((a.x - b.x).abs(), (a.y - b.y).abs())
+                                )
+                             }),
+                        });
+                    }
+                    Err(err) => {
+                        log::warn!("failed to load image {:?}: {}", name, err);
+                    }
+                }
+            }
+
             _ => {
                 log::warn!("unknown op {:?}", op);
             }
@@ -742,33 +834,4 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
     }
 
     page_ops
-}
-
-pub fn page_images(doc: &Document, page_id: ObjectId) -> Vec<image::Handle> {
-    let pdf_images = match doc.get_page_images(page_id) {
-        Ok(ok) => ok,
-        Err(err) => {
-            log::warn!("failed to get images for page {:?}: {}", page_id, err);
-            Vec::new()
-        }
-    };
-
-    let mut images = Vec::with_capacity(pdf_images.len());
-    for pdf_image in pdf_images {
-        log::info!(
-            "image id {:?}, size {}x{}, bits per channel {:?}, color space {:?}, filters {:?}, content length {}, dict {:?}",
-            pdf_image.id,
-            pdf_image.width,
-            pdf_image.height,
-            pdf_image.bits_per_component,
-            pdf_image.color_space,
-            pdf_image.filters,
-            pdf_image.content.len(),
-            pdf_image.origin_dict,
-        );
-        //TODO: use filter to determine image kind
-        images.push(image::Handle::from_memory(pdf_image.content.to_vec()));
-    }
-
-    images
 }

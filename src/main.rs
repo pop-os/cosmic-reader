@@ -1,5 +1,5 @@
 use cosmic::{
-    app::{Command, Core, Settings},
+    app::{Core, Settings, Task},
     executor,
     iced::{
         keyboard::{self, key::Named, Key},
@@ -60,7 +60,7 @@ struct App {
     flags: Flags,
     canvas_cache: canvas::Cache,
     nav_model: Model,
-    page_cache: Mutex<HashMap<ObjectId, (Vec<pdf::PageOp>, Vec<image::Handle>)>>,
+    page_cache: Mutex<HashMap<ObjectId, Vec<pdf::PageOp>>>,
 }
 
 impl canvas::Program<Message, Theme, Renderer> for App {
@@ -79,6 +79,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
                 location,
                 modifiers,
                 text,
+                ..
             }) => {
                 match key {
                     Key::Named(Named::Home) => {
@@ -142,7 +143,7 @@ impl canvas::Program<Message, Theme, Renderer> for App {
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: Cursor,
-    ) -> Vec<iced_renderer::Geometry> {
+    ) -> Vec<widget::canvas::Geometry> {
         let geo = self.canvas_cache.draw(renderer, bounds.size(), |frame| {
             if let Some(&page_id) = self.nav_model.active_data::<ObjectId>() {
                 let doc = &self.flags.doc;
@@ -188,19 +189,22 @@ impl canvas::Program<Message, Theme, Renderer> for App {
 
                 {
                     let mut page_cache = self.page_cache.lock().unwrap();
-                    let (ops, images) = page_cache.entry(page_id).or_insert_with(|| {
-                        (pdf::page_ops(doc, page_id), pdf::page_images(doc, page_id))
-                    });
+                    let ops = page_cache
+                        .entry(page_id)
+                        .or_insert_with(|| pdf::page_ops(doc, page_id));
                     for op in ops.iter() {
-                        if let Some(fill) = &op.fill {
-                            frame.fill(&op.path, fill.clone());
+                        if let Some(path) = &op.path {
+                            if let Some(fill) = &op.fill {
+                                frame.fill(path, fill.clone());
+                            }
+                            if let Some(stroke) = &op.stroke {
+                                frame.stroke(path, stroke.clone());
+                            }
                         }
-                        if let Some(stroke) = &op.stroke {
-                            frame.stroke(&op.path, stroke.clone());
+                        if let Some(image) = &op.image {
+                            println!("Draw image {:?} at {:?}", image.name, image.rect);
+                            frame.draw_image(image.rect, &image.handle);
                         }
-                    }
-                    for image in images.iter() {
-                        //TODO
                     }
                 }
             }
@@ -223,7 +227,7 @@ impl Application for App {
         &mut self.core
     }
 
-    fn init(core: Core, flags: Self::Flags) -> (Self, Command<Message>) {
+    fn init(core: Core, flags: Self::Flags) -> (Self, Task<Message>) {
         let mut nav_model = Model::default();
         for (i, page_id) in flags.doc.page_iter().enumerate() {
             nav_model
@@ -241,7 +245,7 @@ impl Application for App {
                 nav_model,
                 page_cache: Mutex::new(HashMap::new()),
             },
-            Command::none(),
+            Task::none(),
         )
     }
 
@@ -249,19 +253,19 @@ impl Application for App {
         Some(&self.nav_model)
     }
 
-    fn on_nav_select(&mut self, id: widget::nav_bar::Id) -> Command<Message> {
+    fn on_nav_select(&mut self, id: widget::nav_bar::Id) -> Task<Message> {
         self.canvas_cache.clear();
         self.nav_model.activate(id);
-        Command::none()
+        Task::none()
     }
 
-    fn update(&mut self, message: Message) -> Command<Message> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::CanvasClearCache => {
                 self.canvas_cache.clear();
             }
         }
-        Command::none()
+        Task::none()
     }
 
     fn view(&self) -> Element<Message> {
