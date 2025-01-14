@@ -17,7 +17,7 @@ default-features = false
 features = ["tokio", "winit"]
 
 [dependencies.lopdf]
-version = "0.34"
+git = "https://github.com/J-F-Liu/lopdf.git"
 
 [features]
 default = ["wgpu"]

@@ -104,6 +104,11 @@ impl Default for CanvasState {
     }
 }
 
+// lopdf dropped Object::as_name_str in newer versions
+fn as_name_str(object: &Object) -> lopdf::Result<&str> {
+    str::from_utf8(object.as_name()?).map_err(|_| lopdf::Error::CharacterEncoding)
+}
+
 //TODO: errors
 fn convert_color(color_space: &str, color: &[Object]) -> Color {
     use color_space::ToRgb;
@@ -196,7 +201,7 @@ fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
                         fontdb::Source::Binary(data.clone()),
                         &data,
                         index,
-                        || match font.get(b"BaseFont").and_then(|x| x.as_name_str()) {
+                        || match font.get(b"BaseFont").and_then(as_name_str) {
                             Ok(base_font) => Some((
                                 vec![(
                                     base_font.to_string(),
@@ -254,8 +259,12 @@ fn load_image(
     let xvalue = doc.get_object(id)?;
     let xvalue = xvalue.as_stream()?;
     let dict = &xvalue.dict;
-    if dict.get(b"Subtype")?.as_name()? != b"Image" {
-        return Err(lopdf::Error::Type);
+    let sub_type = dict.get(b"Subtype")?.as_name()?;
+    if sub_type != b"Image" {
+        return Err(lopdf::Error::DictType {
+            expected: "Image",
+            found: String::from_utf8_lossy(sub_type).to_string(),
+        });
     }
     let width = dict.get(b"Width")?.as_i64()?;
     let height = dict.get(b"Height")?.as_i64()?;
@@ -431,7 +440,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
             // Text state
             "Tf" => {
                 //TODO: use font name
-                let name = op.operands[0].as_name_str().unwrap();
+                let name = as_name_str(&op.operands[0]).unwrap();
                 let size = op.operands[1].as_float().unwrap();
                 log::info!("set font {name:?} size {size}");
 
@@ -459,7 +468,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                             Ok(desc) => {
                                 log::info!("{desc:?}");
 
-                                match desc.get(b"FontStretch").and_then(|x| x.as_name_str()) {
+                                match desc.get(b"FontStretch").and_then(as_name_str) {
                                     Ok(font_stretch) => match font_stretch {
                                         "UltraCondensed" => attrs.stretch = Stretch::UltraCondensed,
                                         "ExtraCondensed" => attrs.stretch = Stretch::ExtraCondensed,
@@ -516,7 +525,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                     Err(_err) => {}
                                 }
 
-                                match desc.get(b"FontFamily").and_then(|x| x.as_name_str()) {
+                                match desc.get(b"FontFamily").and_then(as_name_str) {
                                     Ok(font_family) => {
                                         attrs.family_owned = FamilyOwned::Name(font_family.into());
                                     }
@@ -530,7 +539,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                             }
                         }
 
-                        match font_dict.get(b"BaseFont").and_then(|x| x.as_name_str()) {
+                        match font_dict.get(b"BaseFont").and_then(as_name_str) {
                             Ok(base_font) => {
                                 log::info!("BaseFont {:?}", base_font);
 
@@ -659,7 +668,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                         Some(encoding) => {
                             Document::decode_text(encoding, elements[i].as_str().unwrap()).unwrap()
                         }
-                        None => elements[i].as_string().unwrap().to_string(),
+                        None => String::from_utf8_lossy(elements[i].as_str().unwrap()).to_string(),
                     };
                     i += 1;
                     let adjustment = if has_adjustment && i < elements.len() {
@@ -752,11 +761,11 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
 
             // Color
             "cs" => {
-                color_space_fill = op.operands[0].as_name_str().unwrap().to_string();
+                color_space_fill = as_name_str(&op.operands[0]).unwrap().to_string();
                 log::info!("color space (fill) {color_space_fill}");
             }
             "CS" => {
-                color_space_stroke = op.operands[0].as_name_str().unwrap().to_string();
+                color_space_stroke = as_name_str(&op.operands[0]).unwrap().to_string();
                 log::info!("color space (stroke) {color_space_stroke}");
             }
             "g" => {
@@ -800,7 +809,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
 
             // Object painting
             "Do" => {
-                let name = op.operands[0].as_name_str().unwrap();
+                let name = as_name_str(&op.operands[0]).unwrap();
                 log::info!("image {name:?}");
 
                 match load_image(doc, page_id, name) {
