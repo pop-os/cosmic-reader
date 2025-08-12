@@ -47,7 +47,7 @@ impl Text {
         let mut buffer = cosmic_text::BufferLine::new(
             &self.content,
             cosmic_text::LineEnding::default(),
-            cosmic_text::AttrsList::new(self.attrs.as_attrs()),
+            cosmic_text::AttrsList::new(&self.attrs.as_attrs()),
             text::to_shaping(self.shaping),
         );
 

@@ -8,17 +8,35 @@ edition = "2021"
 color_space = "0.5"
 env_logger = "0.11"
 log = "0.4"
+num = "0.4"
+tokio = "1"
 #TODO: export ttf-parser in fontdb?
-ttf-parser = "0.20"
+ttf-parser = "0.25"
+url = "2"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
 default-features = false
 features = ["tokio", "winit"]
 
+# For lopdf feature
+
 [dependencies.lopdf]
 git = "https://github.com/J-F-Liu/lopdf.git"
+optional = true
+
+# For poppler feature
+
+[dependencies.cairo-rs]
+version = "0.21"
+features = ["svg"]
+optional = true
+
+[dependencies.poppler-rs]
+version = "0.25"
+optional = true
 
 [features]
-default = ["wgpu"]
+default = ["poppler", "wgpu"]
+poppler = ["dep:cairo-rs", "dep:poppler-rs"]
 wgpu = ["libcosmic/wgpu"]
