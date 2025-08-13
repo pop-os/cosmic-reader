@@ -25,11 +25,17 @@ features = ["tokio", "winit"]
 git = "https://github.com/J-F-Liu/lopdf.git"
 optional = true
 
+# For mupdf feature
+
+[dependencies.mupdf]
+version = "0.5"
+optional = true
+
 # For poppler feature
 
 [dependencies.cairo-rs]
 version = "0.21"
-features = ["svg"]
+features = ["png", "svg"]
 optional = true
 
 [dependencies.poppler-rs]
@@ -37,6 +43,6 @@ version = "0.25"
 optional = true
 
 [features]
-default = ["poppler", "wgpu"]
+default = ["mupdf", "wgpu"]
 poppler = ["dep:cairo-rs", "dep:poppler-rs"]
 wgpu = ["libcosmic/wgpu"]

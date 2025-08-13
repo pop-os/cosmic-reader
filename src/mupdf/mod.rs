@@ -44,7 +44,7 @@ struct Flags {
 enum Message {
     NavItem(i32, String),
     Svg(i32, Vec<u8>),
-    Thumbnail(i32, widget::icon::Handle),
+    Thumbnail(i32, Vec<u8>),
 }
 
 struct App {
@@ -203,9 +203,10 @@ impl Application for App {
                         .data_set::<widget::svg::Handle>(entity, handle);
                 }
             }
-            Message::Thumbnail(index, handle) => {
+            Message::Thumbnail(index, data) => {
                 if let Some(entity) = self.entity_by_index(index) {
-                    self.nav_model.icon_set(entity, widget::icon(handle));
+                    self.nav_model
+                        .icon_set(entity, widget::icon(widget::icon::from_raster_bytes(data)));
                 }
             }
         }
@@ -255,93 +256,55 @@ impl Application for App {
                 //TODO: send errors to UI
                 let handle = tokio::runtime::Handle::current();
                 tokio::task::spawn_blocking(move || {
-                    let doc = poppler::Document::from_file(url.as_str(), None).unwrap();
+                    let Ok(path) = url.to_file_path() else { return };
+                    let doc = mupdf::Document::open(path.as_os_str()).unwrap();
+                    let page_count = doc.page_count().unwrap();
 
                     // Generate the table of contents
-                    for index in 0..doc.n_pages() {
-                        let Some(page) = doc.page(index) else {
-                            continue;
-                        };
-                        let label = page
-                            .label()
-                            .map(|x| x.to_string())
-                            .unwrap_or_else(|| format!("Page {}", index + 1));
+                    for index in 0..page_count {
+                        //TODO: get from doc.outlines?
+                        let label = format!("Page {}", index + 1);
                         handle
                             .block_on(async { output.send(Message::NavItem(index, label)).await })
                             .unwrap();
                     }
 
                     // Render thumbnails
-                    for index in 0..doc.n_pages() {
-                        let Some(page) = doc.page(index) else {
-                            continue;
-                        };
-                        let scale = 128.0 / page.size().0.max(page.size().1);
-                        let width: u16 = num::cast(page.size().0 * scale).unwrap();
-                        let height: u16 = num::cast(page.size().1 * scale).unwrap();
+                    for index in 0..page_count {
+                        let page = doc.load_page(index).unwrap();
+                        let bounds = page.bounds().unwrap();
+                        let scale = 128.0 / bounds.width().max(bounds.height());
+                        let width: u16 = num::cast(bounds.width() * scale).unwrap();
+                        let height: u16 = num::cast(bounds.height() * scale).unwrap();
                         println!(
                             "{}x{} => {}x{}",
-                            page.size().0,
-                            page.size().1,
+                            bounds.width(),
+                            bounds.height(),
                             width,
                             height
                         );
-                        let mut data = vec![0u8; usize::from(width) * usize::from(height) * 4];
-                        {
-                            let surface = unsafe {
-                                cairo::ImageSurface::create_for_data_unsafe(
-                                    data.as_mut_ptr(),
-                                    cairo::Format::ARgb32,
-                                    i32::from(width),
-                                    i32::from(height),
-                                    i32::from(width) * 4,
-                                )
-                            }
+                        let matrix = mupdf::Matrix::new_scale(scale, scale);
+                        let pixmap = page
+                            .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), true, false)
                             .unwrap();
-                            let ctx = cairo::Context::new(surface).unwrap();
-                            ctx.scale(scale, scale);
-                            page.render(&ctx);
-                        }
-                        println!(
-                            "page {} => {}x{} image {} bytes",
-                            index,
-                            width,
-                            height,
-                            data.len()
-                        );
-                        let icon = widget::icon::from_raster_pixels(
-                            u32::from(width),
-                            u32::from(height),
-                            data,
-                        );
+                        let mut data = Vec::new();
+                        //TODO: store raw image data?
+                        pixmap.write_to(&mut data, mupdf::ImageFormat::PNG).unwrap();
                         handle
-                            .block_on(async { output.send(Message::Thumbnail(index, icon)).await })
+                            .block_on(async { output.send(Message::Thumbnail(index, data)).await })
                             .unwrap();
                     }
 
                     // Next render all pages
                     //TODO: render based on scroll?
-                    for index in 0..doc.n_pages() {
-                        let Some(page) = doc.page(index) else {
-                            continue;
-                        };
-
-                        let mut data = Vec::new();
-                        {
-                            let surface = unsafe {
-                                cairo::SvgSurface::for_raw_stream(
-                                    page.size().0,
-                                    page.size().1,
-                                    &mut data,
-                                )
-                            }
-                            .unwrap();
-                            let ctx = cairo::Context::new(surface).unwrap();
-                            page.render(&ctx);
-                        }
+                    for index in 0..page_count {
+                        let page = doc.load_page(index).unwrap();
+                        let data = page.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
                         println!("page {} => SVG {} bytes", index, data.len());
                         handle
-                            .block_on(async { output.send(Message::Svg(index, data)).await })
+                            .block_on(async {
+                                output.send(Message::Svg(index, data.into_bytes())).await
+                            })
                             .unwrap();
                     }
                 })
