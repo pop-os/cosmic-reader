@@ -1,12 +1,13 @@
 use cosmic::{
     action,
-    app::{self, Core, Settings, Task},
+    app::{Core, Settings, Task},
     cosmic_theme, executor,
-    iced::{futures::SinkExt, stream, widget::scrollable, ContentFit, Length, Subscription},
+    iced::{futures::SinkExt, stream, Length, Subscription},
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
+use rayon::prelude::*;
 use std::{any::TypeId, env, fs, io, sync::Arc};
 
 const THUMBNAIL_WIDTH: u16 = 128;
@@ -46,14 +47,6 @@ fn display_list_to_handle(display_list: &mupdf::DisplayList, scale: f32) -> widg
     let pixmap = display_list
         .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false)
         .unwrap();
-    eprintln!(
-        "{}x{} @ {} => {}x{}",
-        display_list.bounds().width(),
-        display_list.bounds().height(),
-        scale,
-        pixmap.width(),
-        pixmap.height(),
-    );
     let mut data = Vec::new();
     //TODO: store raw image data?
     pixmap.write_to(&mut data, mupdf::ImageFormat::PNG).unwrap();
@@ -79,6 +72,10 @@ enum Message {
     Image(Entity, widget::image::Handle),
     Pages(Vec<Page>),
     NavSelect(Entity),
+    SearchActivate,
+    SearchClear,
+    SearchInput(String),
+    SearchResults(Entity, Vec<mupdf::Quad>),
     Thumbnail(Entity, widget::image::Handle),
 }
 
@@ -87,6 +84,9 @@ struct App {
     dpi: f32,
     flags: Flags,
     nav_model: Model,
+    search_active: bool,
+    search_id: widget::Id,
+    search_term: String,
 }
 
 impl App {
@@ -144,6 +144,32 @@ impl Application for App {
         &mut self.core
     }
 
+    fn header_end(&self) -> Vec<Element<Message>> {
+        let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
+
+        let mut elements = Vec::with_capacity(1);
+
+        if self.search_active {
+            elements.push(
+                widget::text_input::search_input("", &self.search_term)
+                    .width(Length::Fixed(240.0))
+                    .id(self.search_id.clone())
+                    .on_clear(Message::SearchClear)
+                    .on_input(Message::SearchInput)
+                    .into(),
+            );
+        } else {
+            elements.push(
+                widget::button::icon(widget::icon::from_name("system-search-symbolic"))
+                    .on_press(Message::SearchActivate)
+                    .padding(space_xxs)
+                    .into(),
+            );
+        }
+
+        elements
+    }
+
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Message>) {
         let mut app = Self {
             core,
@@ -151,6 +177,9 @@ impl Application for App {
             dpi: 192.0,
             flags,
             nav_model: Model::default(),
+            search_active: false,
+            search_id: widget::Id::unique(),
+            search_term: String::new(),
         };
         let task = app.update_page();
         (app, task)
@@ -253,6 +282,19 @@ impl Application for App {
             Message::NavSelect(entity) => {
                 return self.on_nav_select(entity);
             }
+            Message::SearchActivate => {
+                self.search_active = true;
+                return widget::text_input::focus(self.search_id.clone());
+            }
+            Message::SearchClear => {
+                self.search_active = false;
+            }
+            Message::SearchInput(term) => {
+                self.search_term = term.clone();
+            }
+            Message::SearchResults(entity, quads) => {
+                //TODO
+            }
             Message::Thumbnail(entity, handle) => {
                 if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
                     page.icon_handle = Some(handle);
@@ -279,10 +321,12 @@ impl Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        let mut subscriptions = Vec::with_capacity(2);
+
         struct LoaderSubscription;
         let url = self.flags.url.clone();
-        Subscription::run_with_id(
-            TypeId::of::<LoaderSubscription>(),
+        subscriptions.push(Subscription::run_with_id(
+            (TypeId::of::<LoaderSubscription>(), url.clone()),
             stream::channel(16, |mut output| async move {
                 //TODO: send errors to UI
                 let handle = tokio::runtime::Handle::current();
@@ -290,12 +334,13 @@ impl Application for App {
                     let Ok(path) = url.to_file_path() else { return };
                     let doc = mupdf::Document::open(path.as_os_str()).unwrap();
                     let page_count = doc.page_count().unwrap();
+                    //TODO: use outline for document tree view eprintln!("{:#?}", doc.outlines());
 
                     // Generate the table of contents
                     let mut pages = Vec::with_capacity(usize::try_from(page_count).unwrap());
                     for index in 0..page_count {
                         let page = doc.load_page(index).unwrap();
-                        //TODO: get label from doc.outlines?
+                        //TODO: get label?
                         let bounds = page.bounds().unwrap();
                         pages.push(Page {
                             index,
@@ -326,6 +371,54 @@ impl Application for App {
                 .unwrap();
                 std::future::pending().await
             }),
-        )
+        ));
+
+        if self.search_active && !self.search_term.is_empty() {
+            //TODO: efficiently cache this somehow
+            let mut display_lists = Vec::with_capacity(self.nav_model.len());
+            for entity in self.nav_model.iter() {
+                if let Some(page) = self.nav_model.data::<Page>(entity) {
+                    if let Some(display_list) = page.display_list.clone() {
+                        display_lists.push((entity, display_list));
+                    }
+                }
+            }
+
+            struct SearchSubscription;
+            let term = self.search_term.clone();
+            subscriptions.push(Subscription::run_with_id(
+                (TypeId::of::<SearchSubscription>(), term.clone()),
+                stream::channel(16, |output| async move {
+                    let output = Arc::new(tokio::sync::Mutex::new(output));
+                    let handle = tokio::runtime::Handle::current();
+                    tokio::task::spawn_blocking(move || {
+                        let timer = std::time::Instant::now();
+                        display_lists.par_iter().for_each(|(entity, display_list)| {
+                            let quads = display_list.search(&term, 100).unwrap();
+                            if !quads.is_empty() {
+                                eprintln!("{:?}: {:?} results", entity, quads.len(),);
+                                let quads_vec: Vec<mupdf::Quad> = quads.into_iter().collect();
+                                let output = output.clone();
+                                handle
+                                    .block_on(async move {
+                                        output
+                                            .lock()
+                                            .await
+                                            .send(Message::SearchResults(*entity, quads_vec))
+                                            .await
+                                    })
+                                    .unwrap();
+                            }
+                        });
+                        eprintln!("searched for {:?} in {:?}", term, timer.elapsed());
+                    })
+                    .await
+                    .unwrap();
+                    std::future::pending().await
+                }),
+            ));
+        }
+
+        Subscription::batch(subscriptions)
     }
 }
