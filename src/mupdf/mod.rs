@@ -1,12 +1,15 @@
 use cosmic::{
     action,
-    app::{Core, Settings, Task},
-    executor,
+    app::{self, Core, Settings, Task},
+    cosmic_theme, executor,
     iced::{futures::SinkExt, stream, widget::scrollable, ContentFit, Length, Subscription},
+    theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
 use std::{any::TypeId, env, fs, io, sync::Arc};
+
+const THUMBNAIL_WIDTH: u16 = 128;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -38,10 +41,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 //TODO: return errors
-fn display_list_to_png(display_list: &mupdf::DisplayList, scale: f32) -> Vec<u8> {
+fn display_list_to_handle(display_list: &mupdf::DisplayList, scale: f32) -> widget::image::Handle {
     let matrix = mupdf::Matrix::new_scale(scale, scale);
     let pixmap = display_list
-        .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), true)
+        .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false)
         .unwrap();
     eprintln!(
         "{}x{} @ {} => {}x{}",
@@ -54,7 +57,7 @@ fn display_list_to_png(display_list: &mupdf::DisplayList, scale: f32) -> Vec<u8>
     let mut data = Vec::new();
     //TODO: store raw image data?
     pixmap.write_to(&mut data, mupdf::ImageFormat::PNG).unwrap();
-    data
+    widget::image::Handle::from_bytes(data)
 }
 
 struct Flags {
@@ -62,11 +65,21 @@ struct Flags {
 }
 
 #[derive(Clone, Debug)]
+struct Page {
+    index: i32,
+    bounds: mupdf::Rect,
+    display_list: Option<Arc<mupdf::DisplayList>>,
+    icon_handle: Option<widget::image::Handle>,
+    image_handle: Option<widget::image::Handle>,
+}
+
+#[derive(Clone, Debug)]
 enum Message {
     DisplayList(i32, Arc<mupdf::DisplayList>),
-    Image(i32, Vec<u8>),
-    NavItem(i32, String),
-    Thumbnail(i32, Vec<u8>),
+    Image(Entity, widget::image::Handle),
+    Pages(Vec<Page>),
+    NavSelect(Entity),
+    Thumbnail(Entity, widget::image::Handle),
 }
 
 struct App {
@@ -79,8 +92,10 @@ struct App {
 impl App {
     fn entity_by_index(&self, index: i32) -> Option<Entity> {
         for entity in self.nav_model.iter() {
-            if self.nav_model.data::<i32>(entity) == Some(&index) {
-                return Some(entity);
+            if let Some(page) = self.nav_model.data::<Page>(entity) {
+                if page.index == index {
+                    return Some(entity);
+                }
             }
         }
         None
@@ -89,29 +104,14 @@ impl App {
     fn update_page(&mut self) -> Task<Message> {
         let entity = self.nav_model.active();
 
-        if self
-            .nav_model
-            .data::<widget::image::Handle>(entity)
-            .is_some()
-        {
+        let Some(page) = self.nav_model.data::<Page>(entity) else {
+            return Task::none();
+        };
+        if page.image_handle.is_some() {
             // Already has image cached
             return Task::none();
         }
-
-        if self.nav_model.data::<widget::svg::Handle>(entity).is_some() {
-            // Already has SVG cached
-            return Task::none();
-        }
-
-        let Some(index) = self.nav_model.data::<i32>(entity).copied() else {
-            return Task::none();
-        };
-
-        let Some(display_list) = self
-            .nav_model
-            .data::<Arc<mupdf::DisplayList>>(entity)
-            .cloned()
-        else {
+        let Some(display_list) = page.display_list.clone() else {
             return Task::none();
         };
 
@@ -120,8 +120,7 @@ impl App {
             async move {
                 tokio::task::spawn_blocking(move || {
                     let scale = dpi / 72.0;
-                    let data = display_list_to_png(&display_list, scale);
-                    Message::Image(index, data)
+                    Message::Image(entity, display_list_to_handle(&display_list, scale))
                 })
                 .await
                 .unwrap()
@@ -157,6 +156,49 @@ impl Application for App {
         (app, task)
     }
 
+    fn nav_bar(&self) -> Option<Element<action::Action<Message>>> {
+        if !self.core.nav_bar_active() {
+            return None;
+        }
+
+        let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
+
+        let mut column = widget::column::with_capacity(self.nav_model.len())
+            .padding(space_xxs)
+            .spacing(space_xxs);
+        for entity in self.nav_model.iter() {
+            if let Some(page) = self.nav_model.data::<Page>(entity) {
+                if let Some(handle) = &page.icon_handle {
+                    column = column.push(
+                        widget::button::image(handle)
+                            .width(THUMBNAIL_WIDTH)
+                            .on_press(action::app(Message::NavSelect(entity))),
+                    );
+                } else {
+                    column = column.push(
+                        widget::button::custom_image_button(
+                            widget::Space::with_height(Length::Fixed(
+                                page.bounds.height() * (THUMBNAIL_WIDTH as f32)
+                                    / page.bounds.width(),
+                            )),
+                            None,
+                        )
+                        .width(THUMBNAIL_WIDTH)
+                        .on_press(action::app(Message::NavSelect(entity))),
+                    );
+                }
+            }
+        }
+
+        let mut nav = widget::container(widget::scrollable(column).width(Length::Fixed(
+            (THUMBNAIL_WIDTH as f32) + (space_xxs as f32) * 2.0,
+        )));
+        if !self.core.is_condensed() {
+            nav = nav.max_width(280);
+        }
+        Some(nav.into())
+    }
+
     fn nav_model(&self) -> Option<&Model> {
         Some(&self.nav_model)
     }
@@ -169,49 +211,51 @@ impl Application for App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DisplayList(index, display_list) => {
-                let mut tasks = Vec::with_capacity(2);
                 if let Some(entity) = self.entity_by_index(index) {
-                    self.nav_model
-                        .data_set::<Arc<mupdf::DisplayList>>(entity, display_list.clone());
+                    let mut tasks = Vec::with_capacity(2);
+                    if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                        page.display_list = Some(display_list.clone());
+                    }
                     if entity == self.nav_model.active() {
                         tasks.push(self.update_page());
                     }
-                }
-                tasks.push(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let bounds = display_list.bounds();
-                            let scale = 128.0 / bounds.width().max(bounds.height());
-                            let data = display_list_to_png(&display_list, scale);
-                            Message::Thumbnail(index, data)
-                        })
-                        .await
-                        .unwrap()
-                    },
-                    |x| action::app(x),
-                ));
-                return Task::batch(tasks);
-            }
-            Message::Image(index, data) => {
-                if let Some(entity) = self.entity_by_index(index) {
-                    let handle = widget::image::Handle::from_bytes(data);
-                    self.nav_model
-                        .data_set::<widget::image::Handle>(entity, handle);
+                    tasks.push(Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                let scale =
+                                    (THUMBNAIL_WIDTH as f32) / display_list.bounds().width();
+                                Message::Thumbnail(
+                                    entity,
+                                    display_list_to_handle(&display_list, scale),
+                                )
+                            })
+                            .await
+                            .unwrap()
+                        },
+                        |x| action::app(x),
+                    ));
+                    return Task::batch(tasks);
                 }
             }
-            Message::NavItem(index, label) => {
-                let activate = self.nav_model.len() == 0;
-                let entity = self.nav_model.insert().data::<i32>(index).text(label);
-                if activate {
-                    entity.activate();
+            Message::Image(entity, handle) => {
+                if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                    page.image_handle = Some(handle);
                 }
             }
-            Message::Thumbnail(index, data) => {
-                if let Some(entity) = self.entity_by_index(index) {
-                    self.nav_model.icon_set(
-                        entity,
-                        widget::icon(widget::icon::from_raster_bytes(data)).size(32),
-                    );
+            Message::Pages(pages) => {
+                self.nav_model.clear();
+                for page in pages {
+                    self.nav_model.insert().data::<Page>(page);
+                }
+                self.nav_model.activate_position(0);
+                return self.update_page();
+            }
+            Message::NavSelect(entity) => {
+                return self.on_nav_select(entity);
+            }
+            Message::Thumbnail(entity, handle) => {
+                if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                    page.icon_handle = Some(handle);
                 }
             }
         }
@@ -222,11 +266,13 @@ impl Application for App {
         let entity = self.nav_model.active();
 
         // Handle cached images
-        if let Some(handle) = self.nav_model.data::<widget::image::Handle>(entity) {
-            return widget::image::viewer(handle.clone())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
+        if let Some(page) = self.nav_model.data::<Page>(entity) {
+            if let Some(handle) = &page.image_handle {
+                return widget::image::viewer(handle.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
+            }
         }
 
         widget::text("Page loading...").into()
@@ -246,13 +292,22 @@ impl Application for App {
                     let page_count = doc.page_count().unwrap();
 
                     // Generate the table of contents
+                    let mut pages = Vec::with_capacity(usize::try_from(page_count).unwrap());
                     for index in 0..page_count {
-                        //TODO: get from doc.outlines?
-                        let label = format!("Page {}", index + 1);
-                        handle
-                            .block_on(async { output.send(Message::NavItem(index, label)).await })
-                            .unwrap();
+                        let page = doc.load_page(index).unwrap();
+                        //TODO: get label from doc.outlines?
+                        let bounds = page.bounds().unwrap();
+                        pages.push(Page {
+                            index,
+                            bounds,
+                            display_list: None,
+                            icon_handle: None,
+                            image_handle: None,
+                        });
                     }
+                    handle
+                        .block_on(async { output.send(Message::Pages(pages)).await })
+                        .unwrap();
 
                     // Generate display lists (cannot be threaded)
                     for index in 0..page_count {
