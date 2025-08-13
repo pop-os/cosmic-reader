@@ -1,11 +1,12 @@
 use cosmic::{
+    action,
     app::{Core, Settings, Task},
     executor,
     iced::{futures::SinkExt, stream, widget::scrollable, ContentFit, Length, Subscription},
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
-use std::{any::TypeId, env, fs, io};
+use std::{any::TypeId, env, fs, io, sync::Arc};
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -36,20 +37,41 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+//TODO: return errors
+fn display_list_to_png(display_list: &mupdf::DisplayList, scale: f32) -> Vec<u8> {
+    let matrix = mupdf::Matrix::new_scale(scale, scale);
+    let pixmap = display_list
+        .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), true)
+        .unwrap();
+    eprintln!(
+        "{}x{} @ {} => {}x{}",
+        display_list.bounds().width(),
+        display_list.bounds().height(),
+        scale,
+        pixmap.width(),
+        pixmap.height(),
+    );
+    let mut data = Vec::new();
+    //TODO: store raw image data?
+    pixmap.write_to(&mut data, mupdf::ImageFormat::PNG).unwrap();
+    data
+}
+
 struct Flags {
     url: url::Url,
 }
 
 #[derive(Clone, Debug)]
 enum Message {
+    DisplayList(i32, Arc<mupdf::DisplayList>),
+    Image(i32, Vec<u8>),
     NavItem(i32, String),
-    Svg(i32, Vec<u8>),
     Thumbnail(i32, Vec<u8>),
 }
 
 struct App {
     core: Core,
-    dpi: f64,
+    dpi: f32,
     flags: Flags,
     nav_model: Model,
 }
@@ -81,79 +103,36 @@ impl App {
             return Task::none();
         }
 
-        let Some(index) = self.nav_model.data::<i32>(entity) else {
+        let Some(index) = self.nav_model.data::<i32>(entity).copied() else {
             return Task::none();
         };
 
-        /*TODO
-        let Some(page) = self.flags.doc.page(*index) else {
+        let Some(display_list) = self
+            .nav_model
+            .data::<Arc<mupdf::DisplayList>>(entity)
+            .cloned()
+        else {
             return Task::none();
         };
 
-        //TODO: return errors
-        //TODO: run in background (poppler::Page can't be shared with threads?)
-        let svg = true;
-        if svg {
-            let mut data = Vec::new();
-            {
-                let surface = unsafe {
-                    cairo::SvgSurface::for_raw_stream(page.size().0, page.size().1, &mut data)
-                }
-                .unwrap();
-                let ctx = cairo::Context::new(surface).unwrap();
-                page.render(&ctx);
-            }
-            println!("page {} => SVG {} bytes", index, data.len());
-            let handle = widget::svg::Handle::from_memory(data);
-            self.nav_model
-                .data_set::<widget::svg::Handle>(entity, handle);
-        } else {
-            let scale = self.dpi / 72.0;
-            let width: u16 = num::cast(page.size().0 * scale).unwrap();
-            let height: u16 = num::cast(page.size().1 * scale).unwrap();
-            println!(
-                "{}x{} => {}x{}",
-                page.size().0,
-                page.size().1,
-                width,
-                height
-            );
-            let mut data =
-                vec![0u8; usize::from(width) * usize::from(height) * 4].into_boxed_slice();
-            {
-                let surface = unsafe {
-                    cairo::ImageSurface::create_for_data_unsafe(
-                        data.as_mut_ptr(),
-                        cairo::Format::ARgb32,
-                        i32::from(width),
-                        i32::from(height),
-                        i32::from(width) * 4,
-                    )
-                }
-                .unwrap();
-                let ctx = cairo::Context::new(surface).unwrap();
-                ctx.scale(scale, scale);
-                page.render(&ctx);
-            }
-            println!(
-                "page {} => {}x{} image {} bytes",
-                index,
-                width,
-                height,
-                data.len()
-            );
-            let handle =
-                widget::image::Handle::from_rgba(u32::from(width), u32::from(height), data);
-            self.nav_model
-                .data_set::<widget::image::Handle>(entity, handle);
-        }
-        */
-        Task::none()
+        let dpi = self.dpi;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let scale = dpi / 72.0;
+                    let data = display_list_to_png(&display_list, scale);
+                    Message::Image(index, data)
+                })
+                .await
+                .unwrap()
+            },
+            |x| action::app(x),
+        )
     }
 }
 
 impl Application for App {
-    type Executor = executor::Default;
+    type Executor = executor::multi::Executor;
     type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = "com.system76.CosmicReader";
@@ -189,6 +168,37 @@ impl Application for App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DisplayList(index, display_list) => {
+                let mut tasks = Vec::with_capacity(2);
+                if let Some(entity) = self.entity_by_index(index) {
+                    self.nav_model
+                        .data_set::<Arc<mupdf::DisplayList>>(entity, display_list.clone());
+                    if entity == self.nav_model.active() {
+                        tasks.push(self.update_page());
+                    }
+                }
+                tasks.push(Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let bounds = display_list.bounds();
+                            let scale = 128.0 / bounds.width().max(bounds.height());
+                            let data = display_list_to_png(&display_list, scale);
+                            Message::Thumbnail(index, data)
+                        })
+                        .await
+                        .unwrap()
+                    },
+                    |x| action::app(x),
+                ));
+                return Task::batch(tasks);
+            }
+            Message::Image(index, data) => {
+                if let Some(entity) = self.entity_by_index(index) {
+                    let handle = widget::image::Handle::from_bytes(data);
+                    self.nav_model
+                        .data_set::<widget::image::Handle>(entity, handle);
+                }
+            }
             Message::NavItem(index, label) => {
                 let activate = self.nav_model.len() == 0;
                 let entity = self.nav_model.insert().data::<i32>(index).text(label);
@@ -196,17 +206,12 @@ impl Application for App {
                     entity.activate();
                 }
             }
-            Message::Svg(index, data) => {
-                if let Some(entity) = self.entity_by_index(index) {
-                    let handle = widget::svg::Handle::from_memory(data);
-                    self.nav_model
-                        .data_set::<widget::svg::Handle>(entity, handle);
-                }
-            }
             Message::Thumbnail(index, data) => {
                 if let Some(entity) = self.entity_by_index(index) {
-                    self.nav_model
-                        .icon_set(entity, widget::icon(widget::icon::from_raster_bytes(data)));
+                    self.nav_model.icon_set(
+                        entity,
+                        widget::icon(widget::icon::from_raster_bytes(data)).size(32),
+                    );
                 }
             }
         }
@@ -214,37 +219,17 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<Message> {
-        //TODO:
-        let mut column = widget::column::with_capacity(self.nav_model.len());
-        for entity in self.nav_model.iter() {
-            // Handle cached images
-            if let Some(handle) = self.nav_model.data::<widget::image::Handle>(entity) {
-                column = column.push(widget::image(handle).content_fit(ContentFit::None));
-                continue;
-            }
+        let entity = self.nav_model.active();
 
-            // Handle cached SVGs
-            if let Some(handle) = self.nav_model.data::<widget::svg::Handle>(entity) {
-                column = column.push(widget::svg(handle.clone()).content_fit(ContentFit::None));
-                continue;
-            }
-
-            if let Some(icon) = self.nav_model.icon(entity) {
-                column = column.push(icon.clone());
-            }
+        // Handle cached images
+        if let Some(handle) = self.nav_model.data::<widget::image::Handle>(entity) {
+            return widget::image::viewer(handle.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
         }
 
-        let scrollbar = scrollable::Scrollbar::default();
-        scrollable::Scrollable::with_direction(
-            column,
-            scrollable::Direction::Both {
-                vertical: scrollbar,
-                horizontal: scrollbar,
-            },
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        widget::text("Page loading...").into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -269,41 +254,15 @@ impl Application for App {
                             .unwrap();
                     }
 
-                    // Render thumbnails
+                    // Generate display lists (cannot be threaded)
                     for index in 0..page_count {
                         let page = doc.load_page(index).unwrap();
-                        let bounds = page.bounds().unwrap();
-                        let scale = 128.0 / bounds.width().max(bounds.height());
-                        let width: u16 = num::cast(bounds.width() * scale).unwrap();
-                        let height: u16 = num::cast(bounds.height() * scale).unwrap();
-                        println!(
-                            "{}x{} => {}x{}",
-                            bounds.width(),
-                            bounds.height(),
-                            width,
-                            height
-                        );
-                        let matrix = mupdf::Matrix::new_scale(scale, scale);
-                        let pixmap = page
-                            .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), true, false)
-                            .unwrap();
-                        let mut data = Vec::new();
-                        //TODO: store raw image data?
-                        pixmap.write_to(&mut data, mupdf::ImageFormat::PNG).unwrap();
-                        handle
-                            .block_on(async { output.send(Message::Thumbnail(index, data)).await })
-                            .unwrap();
-                    }
-
-                    // Next render all pages
-                    //TODO: render based on scroll?
-                    for index in 0..page_count {
-                        let page = doc.load_page(index).unwrap();
-                        let data = page.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
-                        println!("page {} => SVG {} bytes", index, data.len());
+                        let display_list = page.to_display_list(false).unwrap();
                         handle
                             .block_on(async {
-                                output.send(Message::Svg(index, data.into_bytes())).await
+                                output
+                                    .send(Message::DisplayList(index, Arc::new(display_list)))
+                                    .await
                             })
                             .unwrap();
                     }
