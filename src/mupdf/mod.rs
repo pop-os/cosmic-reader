@@ -201,7 +201,8 @@ impl Application for App {
                     column = column.push(
                         widget::button::image(handle)
                             .width(THUMBNAIL_WIDTH)
-                            .on_press(action::app(Message::NavSelect(entity))),
+                            .on_press(action::app(Message::NavSelect(entity)))
+                            .selected(entity == self.nav_model.active()),
                     );
                 } else {
                     column = column.push(
@@ -213,7 +214,8 @@ impl Application for App {
                             None,
                         )
                         .width(THUMBNAIL_WIDTH)
-                        .on_press(action::app(Message::NavSelect(entity))),
+                        .on_press(action::app(Message::NavSelect(entity)))
+                        .selected(entity == self.nav_model.active()),
                     );
                 }
             }
