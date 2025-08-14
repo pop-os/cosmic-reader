@@ -2,7 +2,13 @@ use cosmic::{
     action,
     app::{Core, Settings, Task},
     cosmic_theme, executor,
-    iced::{futures::SinkExt, stream, Length, Subscription},
+    iced::{
+        core::SmolStr,
+        event::{self, Event},
+        futures::SinkExt,
+        keyboard::{key::Named, Event as KeyEvent, Key, Modifiers},
+        stream, Length, Subscription,
+    },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
@@ -70,8 +76,9 @@ struct Page {
 enum Message {
     DisplayList(i32, Arc<mupdf::DisplayList>),
     Image(Entity, widget::image::Handle),
-    Pages(Vec<Page>),
+    Key(Modifiers, Key, Option<SmolStr>),
     NavSelect(Entity),
+    Pages(Vec<Page>),
     SearchActivate,
     SearchClear,
     SearchInput(String),
@@ -84,6 +91,7 @@ struct App {
     dpi: f32,
     flags: Flags,
     nav_model: Model,
+    nav_scroll_id: widget::Id,
     search_active: bool,
     search_id: widget::Id,
     search_term: String,
@@ -177,6 +185,7 @@ impl Application for App {
             dpi: 192.0,
             flags,
             nav_model: Model::default(),
+            nav_scroll_id: widget::Id::unique(),
             search_active: false,
             search_id: widget::Id::unique(),
             search_term: String::new(),
@@ -221,9 +230,13 @@ impl Application for App {
             }
         }
 
-        let mut nav = widget::container(widget::scrollable(column).width(Length::Fixed(
-            (THUMBNAIL_WIDTH as f32) + (space_xxs as f32) * 2.0,
-        )));
+        let mut nav = widget::container(
+            widget::scrollable(column)
+                .id(self.nav_scroll_id.clone())
+                .width(Length::Fixed(
+                    (THUMBNAIL_WIDTH as f32) + (space_xxs as f32) * 2.0,
+                )),
+        );
         if !self.core.is_condensed() {
             nav = nav.max_width(280);
         }
@@ -273,6 +286,42 @@ impl Application for App {
                     page.image_handle = Some(handle);
                 }
             }
+            Message::Key(modifiers, key, text) => match key {
+                Key::Named(Named::ArrowUp | Named::ArrowLeft | Named::PageUp) => {
+                    let pos = self
+                        .nav_model
+                        .position(self.nav_model.active())
+                        .unwrap_or(0);
+                    if let Some(new_pos) = pos.checked_sub(1) {
+                        self.nav_model.activate_position(new_pos);
+                    }
+                    return self.update_page();
+                }
+                Key::Named(Named::ArrowDown | Named::ArrowRight | Named::PageDown) => {
+                    let pos = self
+                        .nav_model
+                        .position(self.nav_model.active())
+                        .unwrap_or(0);
+                    if let Some(new_pos) = pos.checked_add(1) {
+                        self.nav_model.activate_position(new_pos);
+                    }
+                    return self.update_page();
+                }
+                Key::Named(Named::Escape) => {
+                    self.search_active = false;
+                }
+                Key::Character(c) => match c.as_str() {
+                    "f" | "s" | "/" => {
+                        self.search_active = true;
+                        return widget::text_input::focus(self.search_id.clone());
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+            Message::NavSelect(entity) => {
+                return self.on_nav_select(entity);
+            }
             Message::Pages(pages) => {
                 self.nav_model.clear();
                 for page in pages {
@@ -280,9 +329,6 @@ impl Application for App {
                 }
                 self.nav_model.activate_position(0);
                 return self.update_page();
-            }
-            Message::NavSelect(entity) => {
-                return self.on_nav_select(entity);
             }
             Message::SearchActivate => {
                 self.search_active = true;
@@ -323,7 +369,20 @@ impl Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = Vec::with_capacity(2);
+        let mut subscriptions = Vec::with_capacity(3);
+
+        subscriptions.push(event::listen_with(|event, status, window_id| match event {
+            Event::Keyboard(KeyEvent::KeyPressed {
+                key,
+                modifiers,
+                text,
+                ..
+            }) => match status {
+                event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
+                event::Status::Captured => None,
+            },
+            _ => None,
+        }));
 
         struct LoaderSubscription;
         let url = self.flags.url.clone();
