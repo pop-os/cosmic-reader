@@ -7,14 +7,16 @@ use cosmic::{
         event::{self, Event},
         futures::SinkExt,
         keyboard::{key::Named, Event as KeyEvent, Key, Modifiers},
-        stream, Length, Subscription,
+        stream,
+        widget::scrollable,
+        Length, Rectangle, Subscription,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
 use rayon::prelude::*;
-use std::{any::TypeId, env, fs, io, sync::Arc};
+use std::{any::TypeId, cell::Cell, env, fs, io, sync::Arc};
 
 const THUMBNAIL_WIDTH: u16 = 128;
 
@@ -68,6 +70,7 @@ struct Page {
     index: i32,
     bounds: mupdf::Rect,
     display_list: Option<Arc<mupdf::DisplayList>>,
+    icon_bounds: Cell<Option<Rectangle>>,
     icon_handle: Option<widget::image::Handle>,
     image_handle: Option<widget::image::Handle>,
 }
@@ -77,6 +80,7 @@ enum Message {
     DisplayList(i32, Arc<mupdf::DisplayList>),
     Image(Entity, widget::image::Handle),
     Key(Modifiers, Key, Option<SmolStr>),
+    NavScroll(scrollable::Viewport),
     NavSelect(Entity),
     Pages(Vec<Page>),
     SearchActivate,
@@ -92,6 +96,7 @@ struct App {
     flags: Flags,
     nav_model: Model,
     nav_scroll_id: widget::Id,
+    nav_viewport: Option<scrollable::Viewport>,
     search_active: bool,
     search_id: widget::Id,
     search_term: String,
@@ -111,30 +116,55 @@ impl App {
 
     fn update_page(&mut self) -> Task<Message> {
         let entity = self.nav_model.active();
-
         let Some(page) = self.nav_model.data::<Page>(entity) else {
             return Task::none();
         };
-        if page.image_handle.is_some() {
-            // Already has image cached
-            return Task::none();
+        let mut tasks = Vec::with_capacity(2);
+        if let Some(viewport) = &self.nav_viewport {
+            let mut bounds = viewport.bounds();
+            // Adjust bounds to match scroll offset
+            let offset = viewport.absolute_offset();
+            bounds.x = offset.x;
+            bounds.y = offset.y;
+            if let Some(icon_bounds) = page.icon_bounds.get() {
+                if bounds.y > icon_bounds.y {
+                    // Scroll up if necessary
+                    tasks.push(scrollable::scroll_to(
+                        self.nav_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: icon_bounds.y,
+                        },
+                    ));
+                } else if bounds.y + bounds.height < icon_bounds.y + icon_bounds.height {
+                    // Scroll down if necessary
+                    tasks.push(scrollable::scroll_to(
+                        self.nav_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: icon_bounds.y + icon_bounds.height - bounds.height,
+                        },
+                    ));
+                }
+            }
         }
-        let Some(display_list) = page.display_list.clone() else {
-            return Task::none();
-        };
-
-        let dpi = self.dpi;
-        Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let scale = dpi / 72.0;
-                    Message::Image(entity, display_list_to_handle(&display_list, scale))
-                })
-                .await
-                .unwrap()
-            },
-            |x| action::app(x),
-        )
+        if page.image_handle.is_none() {
+            if let Some(display_list) = page.display_list.clone() {
+                let dpi = self.dpi;
+                tasks.push(Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let scale = dpi / 72.0;
+                            Message::Image(entity, display_list_to_handle(&display_list, scale))
+                        })
+                        .await
+                        .unwrap()
+                    },
+                    |x| action::app(x),
+                ));
+            }
+        }
+        Task::batch(tasks)
     }
 }
 
@@ -186,6 +216,7 @@ impl Application for App {
             flags,
             nav_model: Model::default(),
             nav_scroll_id: widget::Id::unique(),
+            nav_viewport: None,
             search_active: false,
             search_id: widget::Id::unique(),
             search_term: String::new(),
@@ -204,35 +235,52 @@ impl Application for App {
         let mut column = widget::column::with_capacity(self.nav_model.len())
             .padding(space_xxs)
             .spacing(space_xxs);
+        let x = space_xxs as f32;
+        let mut y = space_xxs as f32;
+        let mut count = 0;
         for entity in self.nav_model.iter() {
             if let Some(page) = self.nav_model.data::<Page>(entity) {
+                if count > 0 {
+                    y += space_xxs as f32;
+                }
+                //TODO: cache sizes during icon generation?
+                let width = THUMBNAIL_WIDTH as f32;
+                let height = page.bounds.height() * width / page.bounds.width();
+                page.icon_bounds.set(Some(Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                }));
                 if let Some(handle) = &page.icon_handle {
                     column = column.push(
                         widget::button::image(handle)
-                            .width(THUMBNAIL_WIDTH)
+                            .width(width)
+                            .height(height)
                             .on_press(action::app(Message::NavSelect(entity)))
                             .selected(entity == self.nav_model.active()),
                     );
                 } else {
                     column = column.push(
                         widget::button::custom_image_button(
-                            widget::Space::with_height(Length::Fixed(
-                                page.bounds.height() * (THUMBNAIL_WIDTH as f32)
-                                    / page.bounds.width(),
-                            )),
+                            widget::Space::with_height(Length::Fixed(height)),
                             None,
                         )
-                        .width(THUMBNAIL_WIDTH)
+                        .width(width)
+                        .height(height)
                         .on_press(action::app(Message::NavSelect(entity)))
                         .selected(entity == self.nav_model.active()),
                     );
                 }
+                y += height;
+                count += 1;
             }
         }
 
         let mut nav = widget::container(
             widget::scrollable(column)
                 .id(self.nav_scroll_id.clone())
+                .on_scroll(|x| action::app(Message::NavScroll(x)))
                 .width(Length::Fixed(
                     (THUMBNAIL_WIDTH as f32) + (space_xxs as f32) * 2.0,
                 )),
@@ -319,6 +367,9 @@ impl Application for App {
                 },
                 _ => {}
             },
+            Message::NavScroll(viewport) => {
+                self.nav_viewport = Some(viewport);
+            }
             Message::NavSelect(entity) => {
                 return self.on_nav_select(entity);
             }
@@ -407,6 +458,7 @@ impl Application for App {
                             index,
                             bounds,
                             display_list: None,
+                            icon_bounds: Cell::new(None),
                             icon_handle: None,
                             image_handle: None,
                         });
