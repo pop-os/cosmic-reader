@@ -29,7 +29,9 @@ optional = true
 # For mupdf feature
 
 [dependencies.mupdf]
-version = "0.5"
+#https://github.com/messense/mupdf-rs/pull/166
+#version = "0.5"
+git = "https://github.com/jackpot51/mupdf-rs"
 optional = true
 
 # For poppler feature

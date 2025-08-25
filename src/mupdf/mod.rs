@@ -7,9 +7,10 @@ use cosmic::{
         event::{self, Event},
         futures::SinkExt,
         keyboard::{key::Named, Event as KeyEvent, Key, Modifiers},
+        mouse::ScrollDelta,
         stream,
         widget::scrollable,
-        Length, Rectangle, Subscription,
+        window, Color, ContentFit, Length, Rectangle, Subscription,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
@@ -50,7 +51,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 //TODO: return errors
-fn display_list_to_handle(display_list: &mupdf::DisplayList, scale: f32) -> widget::image::Handle {
+fn display_list_to_image(display_list: &mupdf::DisplayList, scale: f32) -> widget::image::Handle {
     let matrix = mupdf::Matrix::new_scale(scale, scale);
     let pixmap = display_list
         .to_pixmap(&matrix, &mupdf::Colorspace::device_rgb(), false)
@@ -72,14 +73,15 @@ struct Page {
     display_list: Option<Arc<mupdf::DisplayList>>,
     icon_bounds: Cell<Option<Rectangle>>,
     icon_handle: Option<widget::image::Handle>,
-    image_handle: Option<widget::image::Handle>,
+    svg_handle: Option<widget::svg::Handle>,
 }
 
 #[derive(Clone, Debug)]
 enum Message {
     DisplayList(i32, Arc<mupdf::DisplayList>),
-    Image(Entity, widget::image::Handle),
+    Fullscreen,
     Key(Modifiers, Key, Option<SmolStr>),
+    ModifiersChanged(Modifiers),
     NavScroll(scrollable::Viewport),
     NavSelect(Entity),
     Pages(Vec<Page>),
@@ -87,19 +89,24 @@ enum Message {
     SearchClear,
     SearchInput(String),
     SearchResults(Entity, Vec<mupdf::Quad>),
+    Svg(Entity, widget::svg::Handle),
     Thumbnail(Entity, widget::image::Handle),
+    ZoomScroll(ScrollDelta),
 }
 
 struct App {
     core: Core,
-    dpi: f32,
     flags: Flags,
+    fullscreen: bool,
+    modifiers: Modifiers,
     nav_model: Model,
     nav_scroll_id: widget::Id,
     nav_viewport: Option<scrollable::Viewport>,
     search_active: bool,
     search_id: widget::Id,
     search_term: String,
+    zoom: f32,
+    zoom_scroll: f32,
 }
 
 impl App {
@@ -148,14 +155,13 @@ impl App {
                 }
             }
         }
-        if page.image_handle.is_none() {
+        if page.svg_handle.is_none() {
             if let Some(display_list) = page.display_list.clone() {
-                let dpi = self.dpi;
                 tasks.push(Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
-                            let scale = dpi / 72.0;
-                            Message::Image(entity, display_list_to_handle(&display_list, scale))
+                            let svg = display_list.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
+                            Message::Svg(entity, widget::svg::Handle::from_memory(svg.into_bytes()))
                         })
                         .await
                         .unwrap()
@@ -212,21 +218,24 @@ impl Application for App {
         let mut app = Self {
             core,
             //TODO: what is the best value to use?
-            dpi: 192.0,
             flags,
+            fullscreen: false,
+            modifiers: Modifiers::default(),
             nav_model: Model::default(),
             nav_scroll_id: widget::Id::unique(),
             nav_viewport: None,
             search_active: false,
             search_id: widget::Id::unique(),
             search_term: String::new(),
+            zoom: 1.0,
+            zoom_scroll: 0.0,
         };
         let task = app.update_page();
         (app, task)
     }
 
     fn nav_bar(&self) -> Option<Element<action::Action<Message>>> {
-        if !self.core.nav_bar_active() {
+        if !self.core.nav_bar_active() || self.fullscreen {
             return None;
         }
 
@@ -278,7 +287,7 @@ impl Application for App {
         }
 
         let mut nav = widget::container(
-            widget::scrollable(column)
+            scrollable(column)
                 .id(self.nav_scroll_id.clone())
                 .on_scroll(|x| action::app(Message::NavScroll(x)))
                 .width(Length::Fixed(
@@ -318,7 +327,7 @@ impl Application for App {
                                     (THUMBNAIL_WIDTH as f32) / display_list.bounds().width();
                                 Message::Thumbnail(
                                     entity,
-                                    display_list_to_handle(&display_list, scale),
+                                    display_list_to_image(&display_list, scale),
                                 )
                             })
                             .await
@@ -329,12 +338,22 @@ impl Application for App {
                     return Task::batch(tasks);
                 }
             }
-            Message::Image(entity, handle) => {
-                if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
-                    page.image_handle = Some(handle);
+            Message::Fullscreen => {
+                self.fullscreen = !self.fullscreen;
+                self.core.window.show_headerbar = !self.fullscreen;
+                if let Some(window_id) = self.core.main_window_id() {
+                    return window::change_mode(
+                        window_id,
+                        if self.fullscreen {
+                            window::Mode::Fullscreen
+                        } else {
+                            window::Mode::Windowed
+                        },
+                    );
                 }
             }
-            Message::Key(modifiers, key, text) => match key {
+            //TODO: move to key binds and set up menu
+            Message::Key(modifiers, key, text) => match &key {
                 Key::Named(Named::ArrowUp | Named::ArrowLeft | Named::PageUp) => {
                     let pos = self
                         .nav_model
@@ -355,10 +374,25 @@ impl Application for App {
                     }
                     return self.update_page();
                 }
+                Key::Named(Named::Enter) => {
+                    return self.update(Message::Fullscreen);
+                }
                 Key::Named(Named::Escape) => {
                     self.search_active = false;
                 }
                 Key::Character(c) => match c.as_str() {
+                    "0" => {
+                        self.zoom = 1.0;
+                        println!("{}", self.zoom)
+                    }
+                    "-" => {
+                        self.zoom = (self.zoom - 0.25).max(0.25);
+                        println!("{}", self.zoom)
+                    }
+                    "=" => {
+                        self.zoom = (self.zoom + 0.25).min(5.0);
+                        println!("{}", self.zoom)
+                    }
                     "f" | "s" | "/" => {
                         self.search_active = true;
                         return widget::text_input::focus(self.search_id.clone());
@@ -367,6 +401,9 @@ impl Application for App {
                 },
                 _ => {}
             },
+            Message::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+            }
             Message::NavScroll(viewport) => {
                 self.nav_viewport = Some(viewport);
             }
@@ -394,10 +431,31 @@ impl Application for App {
             Message::SearchResults(entity, quads) => {
                 //TODO
             }
+            Message::Svg(entity, handle) => {
+                if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                    page.svg_handle = Some(handle);
+                }
+            }
             Message::Thumbnail(entity, handle) => {
                 if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
                     page.icon_handle = Some(handle);
                 }
+            }
+            Message::ZoomScroll(delta) => {
+                self.zoom_scroll += match delta {
+                    ScrollDelta::Lines { y, .. } => y,
+                    //TODO: best pixel to line conversion ratio?
+                    ScrollDelta::Pixels { y, .. } => y / 20.0,
+                };
+                while self.zoom_scroll >= 1.0 {
+                    self.zoom = (self.zoom + 0.25).min(5.0);
+                    self.zoom_scroll -= 1.0;
+                }
+                while self.zoom_scroll <= -1.0 {
+                    self.zoom = (self.zoom - 0.25).max(0.25);
+                    self.zoom_scroll += 1.0;
+                }
+                println!("{}", self.zoom);
             }
         }
         Task::none()
@@ -408,15 +466,42 @@ impl Application for App {
 
         // Handle cached images
         if let Some(page) = self.nav_model.data::<Page>(entity) {
-            if let Some(handle) = &page.image_handle {
-                return widget::image::viewer(handle.clone())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into();
+            if let Some(handle) = &page.svg_handle {
+                let width = page.bounds.width() * self.zoom;
+                let height = page.bounds.height() * self.zoom;
+                return widget::responsive(move |size| {
+                    let mut container = widget::container(
+                        widget::container(
+                            widget::svg(handle.clone())
+                                .content_fit(ContentFit::Fill)
+                                .width(Length::Fixed(width))
+                                .height(Length::Fixed(height)),
+                        )
+                        .style(|_theme| widget::container::background(Color::WHITE)),
+                    );
+                    if size.width > width {
+                        container = container.center_x(Length::Fixed(size.width));
+                    }
+                    if size.height > height {
+                        container = container.center_y(Length::Fixed(size.height));
+                    }
+                    let mut mouse_area =
+                        widget::mouse_area(container).on_double_press(Message::Fullscreen);
+                    if self.modifiers.contains(Modifiers::CTRL) {
+                        mouse_area = mouse_area.on_scroll(Message::ZoomScroll);
+                    }
+                    scrollable(mouse_area)
+                        .direction(scrollable::Direction::Both {
+                            vertical: Default::default(),
+                            horizontal: Default::default(),
+                        })
+                        .into()
+                })
+                .into();
             }
         }
 
-        widget::text("Page loading...").into()
+        widget::horizontal_space().into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -432,6 +517,9 @@ impl Application for App {
                 event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
                 event::Status::Captured => None,
             },
+            Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
+                Some(Message::ModifiersChanged(modifiers))
+            }
             _ => None,
         }));
 
@@ -460,7 +548,7 @@ impl Application for App {
                             display_list: None,
                             icon_bounds: Cell::new(None),
                             icon_handle: None,
-                            image_handle: None,
+                            svg_handle: None,
                         });
                     }
                     handle
