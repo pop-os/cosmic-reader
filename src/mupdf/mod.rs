@@ -466,39 +466,41 @@ impl Application for App {
 
         // Handle cached images
         if let Some(page) = self.nav_model.data::<Page>(entity) {
-            if let Some(handle) = &page.svg_handle {
-                let width = page.bounds.width() * self.zoom;
-                let height = page.bounds.height() * self.zoom;
-                return widget::responsive(move |size| {
-                    let mut container = widget::container(
-                        widget::container(
+            let width = page.bounds.width() * self.zoom;
+            let height = page.bounds.height() * self.zoom;
+            return widget::responsive(move |size| {
+                let mut container = widget::container(
+                    widget::container(if let Some(handle) = &page.svg_handle {
+                        Element::from(
                             widget::svg(handle.clone())
                                 .content_fit(ContentFit::Fill)
-                                .width(Length::Fixed(width))
-                                .height(Length::Fixed(height)),
+                                .width(width)
+                                .height(height),
                         )
-                        .style(|_theme| widget::container::background(Color::WHITE)),
-                    );
-                    if size.width > width {
-                        container = container.center_x(Length::Fixed(size.width));
-                    }
-                    if size.height > height {
-                        container = container.center_y(Length::Fixed(size.height));
-                    }
-                    let mut mouse_area =
-                        widget::mouse_area(container).on_double_press(Message::Fullscreen);
-                    if self.modifiers.contains(Modifiers::CTRL) {
-                        mouse_area = mouse_area.on_scroll(Message::ZoomScroll);
-                    }
-                    scrollable(mouse_area)
-                        .direction(scrollable::Direction::Both {
-                            vertical: Default::default(),
-                            horizontal: Default::default(),
-                        })
-                        .into()
-                })
-                .into();
-            }
+                    } else {
+                        Element::from(widget::Space::new(width, height))
+                    })
+                    .style(|_theme| widget::container::background(Color::WHITE)),
+                );
+                if size.width > width {
+                    container = container.center_x(size.width);
+                }
+                if size.height > height {
+                    container = container.center_y(size.height);
+                }
+                let mut mouse_area =
+                    widget::mouse_area(container).on_double_press(Message::Fullscreen);
+                if self.modifiers.contains(Modifiers::CTRL) {
+                    mouse_area = mouse_area.on_scroll(Message::ZoomScroll);
+                }
+                scrollable(mouse_area)
+                    .direction(scrollable::Direction::Both {
+                        vertical: Default::default(),
+                        horizontal: Default::default(),
+                    })
+                    .into()
+            })
+            .into();
         }
 
         widget::horizontal_space().into()
