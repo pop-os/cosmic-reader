@@ -32,6 +32,9 @@ optional = true
 #https://github.com/messense/mupdf-rs/pull/166
 #version = "0.5"
 git = "https://github.com/jackpot51/mupdf-rs"
+default-features = false
+# All features minus tesseract
+features = ["js", "xps", "svg", "cbz", "img", "html", "epub", "system-fonts"]
 optional = true
 
 # For poppler feature
