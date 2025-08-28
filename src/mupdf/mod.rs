@@ -156,7 +156,7 @@ struct App {
     search_active: bool,
     search_id: widget::Id,
     search_term: String,
-    view_size: Cell<Size>,
+    view_ratio: Cell<f32>,
     zoom: Zoom,
     zoom_names: Vec<String>,
     zoom_scroll: f32,
@@ -224,10 +224,6 @@ impl App {
             }
         }
         Task::batch(tasks)
-    }
-
-    fn zoom_to_percent(&mut self) {
-        
     }
 }
 
@@ -298,7 +294,7 @@ impl Application for App {
             search_active: false,
             search_id: widget::Id::unique(),
             search_term: String::new(),
-            view_size: Cell::new(Size::default()),
+            view_ratio: Cell::new(1.0),
             zoom: Zoom::FitBoth,
             zoom_names,
             zoom_scroll: 0.0,
@@ -455,32 +451,23 @@ impl Application for App {
                 }
                 Key::Character(c) => match c.as_str() {
                     "0" => {
-                        match &mut self.zoom {
-                            Zoom::Percent(percent) => {
-                                *percent = 100;
-                            }
-                            _ => {}
-                        }
+                        self.zoom = Zoom::Percent(100);
                         println!("{:?}", self.zoom)
                     }
                     "-" => {
-                        match &mut self.zoom {
-                            Zoom::Percent(percent) => {
-                                *percent = (*percent - 25).max(25);
-                            }
-                            //TODO: change to percent based on current fit?
-                            _ => {}
-                        }
+                        let percent = match self.zoom {
+                            Zoom::Percent(percent) => percent,
+                            _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
+                        };
+                        self.zoom = Zoom::Percent((percent - 25).max(25).min(500));
                         println!("{:?}", self.zoom)
                     }
                     "=" => {
-                        match &mut self.zoom {
-                            Zoom::Percent(percent) => {
-                                *percent = (*percent + 25).min(500);
-                            }
-                            //TODO: change to percent based on current fit?
-                            _ => {}
-                        }
+                        let percent = match self.zoom {
+                            Zoom::Percent(percent) => percent,
+                            _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
+                        };
+                        self.zoom = Zoom::Percent((percent + 25).max(25).min(500));
                         println!("{:?}", self.zoom)
                     }
                     "f" => {
@@ -551,20 +538,19 @@ impl Application for App {
                     //TODO: best pixel to line conversion ratio?
                     ScrollDelta::Pixels { y, .. } => y / 20.0,
                 };
-                match &mut self.zoom {
-                    Zoom::Percent(percent) => {
-                        while self.zoom_scroll >= 1.0 {
-                            *percent = (*percent + 25).min(500);
-                            self.zoom_scroll -= 1.0;
-                        }
-                        while self.zoom_scroll <= -1.0 {
-                            *percent = (*percent - 25).max(25);
-                            self.zoom_scroll += 1.0;
-                        }
-                    }
-                    //TODO: change to percent based on current fit?
-                    _ => {}
+                let mut percent = match self.zoom {
+                    Zoom::Percent(percent) => percent,
+                    _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
+                };
+                while self.zoom_scroll >= 1.0 {
+                    percent += 25;
+                    self.zoom_scroll -= 1.0;
                 }
+                while self.zoom_scroll <= -1.0 {
+                    percent -= 25;
+                    self.zoom_scroll += 1.0;
+                }
+                self.zoom = Zoom::Percent(percent.max(25).min(500));
                 println!("{}", self.zoom);
             }
         }
@@ -577,15 +563,16 @@ impl Application for App {
         // Handle cached images
         if let Some(page) = self.nav_model.data::<Page>(entity) {
             return widget::responsive(move |size| {
-                self.view_size.set(size);
                 let ratio = match self.zoom {
                     Zoom::FitHeight => size.height / page.bounds.height(),
                     Zoom::FitWidth => size.width / page.bounds.width(),
                     Zoom::FitBoth => {
                         (size.width / page.bounds.width()).min(size.height / page.bounds.height())
                     }
+                    //TODO: adjust ratio by DPI
                     Zoom::Percent(percent) => (percent as f32) / 100.0,
                 };
+                self.view_ratio.set(ratio);
                 let width = page.bounds.width() * ratio;
                 let height = page.bounds.height() * ratio;
                 let mut container = widget::container(
