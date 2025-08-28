@@ -48,3 +48,6 @@ optional = true
 default = ["mupdf", "wgpu"]
 poppler = ["dep:cairo-rs", "dep:poppler-rs"]
 wgpu = ["libcosmic/wgpu"]
+
+[patch.'https://github.com/pop-os/winit/']
+winit = { git = "https://github.com/pop-os/winit//", branch = "redox-0.13" }

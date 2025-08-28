@@ -1554,7 +1554,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/pop-os/winit.git?tag=iced-xdg-surface-0.13#1cc02bdab141072eaabad639d74b032fd0fcc62e"
+source = "git+https://github.com/pop-os/winit//?branch=redox-0.13#f97ab7049a9f2564df5ff153b32415a8dbb5cba5"
 
 [[package]]
 name = "drm"
@@ -6496,7 +6496,7 @@ checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
 [[package]]
 name = "winit"
 version = "0.30.5"
-source = "git+https://github.com/pop-os/winit.git?tag=iced-xdg-surface-0.13#1cc02bdab141072eaabad639d74b032fd0fcc62e"
+source = "git+https://github.com/pop-os/winit//?branch=redox-0.13#f97ab7049a9f2564df5ff153b32415a8dbb5cba5"
 dependencies = [
  "ahash",
  "android-activity",
