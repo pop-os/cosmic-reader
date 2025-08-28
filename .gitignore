@@ -1,2 +1,9 @@
-*.pdf
+/.cargo/
+/debian/*debhelper*
+/debian/cosmic-reader.substvars
+/debian/cosmic-reader/
+/debian/files
 /target/
+/vendor/
+/vendor.tar
+*.pdf

@@ -10,45 +10,60 @@ use cosmic::{
         mouse::ScrollDelta,
         stream,
         widget::scrollable,
-        window, Color, ContentFit, Length, Rectangle, Size, Subscription,
+        window, Alignment, Color, ContentFit, Length, Rectangle, Subscription,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
 use rayon::prelude::*;
-use std::{any::TypeId, cell::Cell, env, fmt, fs, io, sync::Arc};
+use std::{any::TypeId, cell::Cell, fmt, process, sync::Arc};
+
+use crate::fl;
 
 const THUMBNAIL_WIDTH: u16 = 128;
+
+mod argparse;
+mod thumbnail;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
+    let args = argparse::parse();
+
+    if let Some(output) = args.thumbnail_opt {
+        let Some(input) = args.url_opt else {
+            log::error!("thumbnailer can only handle exactly one URL");
+            process::exit(1);
+        };
+
+        match thumbnail::main(&input, &output, args.size_opt) {
+            Ok(()) => process::exit(0),
+            Err(err) => {
+                log::error!("failed to thumbnail '{}': {}", input, err);
+                process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "redox")))]
+    match fork::daemon(true, true) {
+        Ok(fork::Fork::Child) => (),
+        Ok(fork::Fork::Parent(_child_pid)) => process::exit(0),
+        Err(err) => {
+            eprintln!("failed to daemonize: {:?}", err);
+            process::exit(1);
+        }
+    }
+
     crate::localize::localize();
 
-    let arg = env::args().nth(1).unwrap();
-    let url = match url::Url::parse(&arg) {
-        Ok(url) => Ok(url),
-        Err(_) => match fs::canonicalize(&arg) {
-            Ok(path) => {
-                match url::Url::from_file_path(&path)
-                    .or_else(|_| url::Url::from_directory_path(&path))
-                {
-                    Ok(url) => Ok(url),
-                    Err(()) => {
-                        log::warn!("failed to parse path {:?}", path);
-                        Err(io::Error::other("Invalid URL and path"))
-                    }
-                }
-            }
-            Err(err) => {
-                log::warn!("failed to parse argument {:?}: {}", arg, err);
-                Err(err)
-            }
+    cosmic::app::run::<App>(
+        Settings::default(),
+        Flags {
+            url_opt: args.url_opt,
         },
-    }?;
-
-    cosmic::app::run::<App>(Settings::default(), Flags { url })?;
+    )?;
     Ok(())
 }
 
@@ -65,7 +80,7 @@ fn display_list_to_image(display_list: &mupdf::DisplayList, scale: f32) -> widge
 }
 
 struct Flags {
-    url: url::Url,
+    url_opt: Option<url::Url>,
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +96,8 @@ struct Page {
 #[derive(Clone, Debug)]
 enum Message {
     DisplayList(i32, Arc<mupdf::DisplayList>),
+    FileLoad(url::Url),
+    FileOpen,
     Fullscreen,
     Key(Modifiers, Key, Option<SmolStr>),
     ModifiersChanged(Modifiers),
@@ -409,6 +426,29 @@ impl Application for App {
                     return Task::batch(tasks);
                 }
             }
+            Message::FileLoad(url) => {
+                self.nav_model.clear();
+                self.flags.url_opt = Some(url);
+            }
+            Message::FileOpen => {
+                #[cfg(feature = "xdg-portal")]
+                return Task::perform(
+                    async move {
+                        let dialog = cosmic::dialog::file_chooser::open::Dialog::new()
+                            .title(fl!("open-file"));
+                        match dialog.open_file().await {
+                            Ok(response) => {
+                                action::app(Message::FileLoad(response.url().to_owned()))
+                            }
+                            Err(err) => {
+                                log::warn!("failed to open file: {}", err);
+                                action::none()
+                            }
+                        }
+                    },
+                    |x| x,
+                );
+            }
             Message::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 self.core.window.show_headerbar = !self.fullscreen;
@@ -611,6 +651,27 @@ impl Application for App {
             .into();
         }
 
+        if self.flags.url_opt.is_none() {
+            //TODO: use space variables
+            let column = widget::column::with_capacity(4)
+                .align_x(Alignment::Center)
+                .spacing(24)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .push(widget::vertical_space())
+                .push(
+                    widget::column::with_capacity(2)
+                        .align_x(Alignment::Center)
+                        .spacing(8)
+                        .push(widget::icon::from_name("folder-symbolic").size(64))
+                        .push(widget::text::body(fl!("no-file-open"))),
+                )
+                .push(widget::button::suggested(fl!("open-file")).on_press(Message::FileOpen))
+                .push(widget::vertical_space());
+
+            return column.into();
+        }
+
         widget::horizontal_space().into()
     }
 
@@ -634,55 +695,56 @@ impl Application for App {
         }));
 
         struct LoaderSubscription;
-        let url = self.flags.url.clone();
-        subscriptions.push(Subscription::run_with_id(
-            (TypeId::of::<LoaderSubscription>(), url.clone()),
-            stream::channel(16, |mut output| async move {
-                //TODO: send errors to UI
-                let handle = tokio::runtime::Handle::current();
-                tokio::task::spawn_blocking(move || {
-                    let Ok(path) = url.to_file_path() else { return };
-                    let doc = mupdf::Document::open(path.as_os_str()).unwrap();
-                    let page_count = doc.page_count().unwrap();
-                    //TODO: use outline for document tree view eprintln!("{:#?}", doc.outlines());
+        if let Some(url) = self.flags.url_opt.clone() {
+            subscriptions.push(Subscription::run_with_id(
+                (TypeId::of::<LoaderSubscription>(), url.clone()),
+                stream::channel(16, |mut output| async move {
+                    //TODO: send errors to UI
+                    let handle = tokio::runtime::Handle::current();
+                    tokio::task::spawn_blocking(move || {
+                        let Ok(path) = url.to_file_path() else { return };
+                        let doc = mupdf::Document::open(path.as_os_str()).unwrap();
+                        let page_count = doc.page_count().unwrap();
+                        //TODO: use outline for document tree view eprintln!("{:#?}", doc.outlines());
 
-                    // Generate the table of contents
-                    let mut pages = Vec::with_capacity(usize::try_from(page_count).unwrap());
-                    for index in 0..page_count {
-                        let page = doc.load_page(index).unwrap();
-                        //TODO: get label?
-                        let bounds = page.bounds().unwrap();
-                        pages.push(Page {
-                            index,
-                            bounds,
-                            display_list: None,
-                            icon_bounds: Cell::new(None),
-                            icon_handle: None,
-                            svg_handle: None,
-                        });
-                    }
-                    handle
-                        .block_on(async { output.send(Message::Pages(pages)).await })
-                        .unwrap();
-
-                    // Generate display lists (cannot be threaded)
-                    for index in 0..page_count {
-                        let page = doc.load_page(index).unwrap();
-                        let display_list = page.to_display_list(false).unwrap();
+                        // Generate the table of contents
+                        let mut pages = Vec::with_capacity(usize::try_from(page_count).unwrap());
+                        for index in 0..page_count {
+                            let page = doc.load_page(index).unwrap();
+                            //TODO: get label?
+                            let bounds = page.bounds().unwrap();
+                            pages.push(Page {
+                                index,
+                                bounds,
+                                display_list: None,
+                                icon_bounds: Cell::new(None),
+                                icon_handle: None,
+                                svg_handle: None,
+                            });
+                        }
                         handle
-                            .block_on(async {
-                                output
-                                    .send(Message::DisplayList(index, Arc::new(display_list)))
-                                    .await
-                            })
+                            .block_on(async { output.send(Message::Pages(pages)).await })
                             .unwrap();
-                    }
-                })
-                .await
-                .unwrap();
-                std::future::pending().await
-            }),
-        ));
+
+                        // Generate display lists (cannot be threaded)
+                        for index in 0..page_count {
+                            let page = doc.load_page(index).unwrap();
+                            let display_list = page.to_display_list(false).unwrap();
+                            handle
+                                .block_on(async {
+                                    output
+                                        .send(Message::DisplayList(index, Arc::new(display_list)))
+                                        .await
+                                })
+                                .unwrap();
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    std::future::pending().await
+                }),
+            ));
+        }
 
         if self.search_active && !self.search_term.is_empty() {
             //TODO: efficiently cache this somehow

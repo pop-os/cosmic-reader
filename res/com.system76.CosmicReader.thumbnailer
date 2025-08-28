@@ -1,0 +1,5 @@
+[Thumbnailer Entry]
+TryExec=cosmic-reader
+Exec=cosmic-reader --thumbnail %o --size %s %u
+#TODO: add more mime types
+MimeType=application/pdf;
