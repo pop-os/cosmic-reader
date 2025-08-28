@@ -22,6 +22,8 @@ mod ttf;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
+    crate::localize::localize();
+
     let path = env::args().nth(1).unwrap();
     let doc = Document::load(path).unwrap();
 

@@ -1,3 +1,5 @@
+mod localize;
+
 #[cfg(feature = "lopdf")]
 mod lopdf;
 

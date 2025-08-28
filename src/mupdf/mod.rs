@@ -24,6 +24,8 @@ const THUMBNAIL_WIDTH: u16 = 128;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
+    crate::localize::localize();
+
     let arg = env::args().nth(1).unwrap();
     let url = match url::Url::parse(&arg) {
         Ok(url) => Ok(url),

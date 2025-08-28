@@ -14,6 +14,15 @@ tokio = { version = "1", features = ["sync"] }
 #TODO: export ttf-parser in fontdb?
 ttf-parser = "0.25"
 url = "2"
+# Internationalization
+i18n-embed = { version = "0.15", features = [
+    "fluent-system",
+    "desktop-requester",
+] }
+i18n-embed-fl = "0.9"
+icu_collator = "1.5"
+icu_provider = { version = "1.5", features = ["sync"] }
+rust-embed = "8"
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"

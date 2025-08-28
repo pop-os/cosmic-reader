@@ -26,7 +26,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::text::Text;
+use super::text::Text;
 
 type Transform = Transform2D<f32, UnknownUnit, UnknownUnit>;
 
@@ -48,7 +48,7 @@ impl<'a> Default for GraphicsState<'a> {
         Self {
             line_join_style: 0,
             line_width: 1.0,
-            text_attrs: AttrsOwned::new(Attrs::new()),
+            text_attrs: AttrsOwned::new(&Attrs::new()),
             text_encoding: None,
             text_leading: 0.0,
             text_mode: 0,
@@ -197,7 +197,7 @@ fn load_fonts(doc: &Document, fonts: &BTreeMap<Vec<u8>, &Dictionary>) {
                 let data = Arc::new(stream.content);
                 let n = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
                 for index in 0..n {
-                    match crate::ttf::parse_face_info(
+                    match super::ttf::parse_face_info(
                         fontdb::Source::Binary(data.clone()),
                         &data,
                         index,
@@ -445,7 +445,7 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                 log::info!("set font {name:?} size {size}");
 
                 let mut encoding = None;
-                let mut attrs = AttrsOwned::new(Attrs::new());
+                let mut attrs = AttrsOwned::new(&Attrs::new());
                 match fonts
                     .iter()
                     .find(|(font_name, _font_dict)| name.as_bytes() == *font_name)
