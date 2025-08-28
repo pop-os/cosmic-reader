@@ -50,7 +50,8 @@ optional = true
 fork = "0.2"
 
 [features]
-default = ["mupdf", "xdg-portal", "wgpu"]
+default = ["mupdf", "sys-lib", "xdg-portal", "wgpu"]
+sys-lib = ["mupdf?/sys-lib"]
 xdg-portal = ["libcosmic/xdg-portal"]
 wgpu = ["libcosmic/wgpu"]
 

@@ -6,13 +6,19 @@ Build-Depends:
     clang,
     debhelper-compat (=13),
     just,
-    libfontconfig-dev,
-    libfreetype-dev,
-    libjpeg-turbo8-dev,
-    liblcms2-dev,
     libxkbcommon-dev,
     pkg-config,
     rust-all,
+    libfontconfig-dev,
+    libfreetype-dev,
+    libgumbo-dev,
+    libharfbuzz-dev,
+    libjbig2dec0-dev,
+    libjpeg-turbo8-dev,
+    liblcms2-dev,
+    libleptonica-dev,
+    libopenjp2-7-dev,
+    libtesseract-dev,
 Standards-Version: 4.6.2
 Homepage: https://github.com/pop-os/cosmic-reader
 
