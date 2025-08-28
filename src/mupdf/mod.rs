@@ -10,14 +10,14 @@ use cosmic::{
         mouse::ScrollDelta,
         stream,
         widget::scrollable,
-        window, Color, ContentFit, Length, Rectangle, Subscription,
+        window, Color, ContentFit, Length, Rectangle, Size, Subscription,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
     Application, Element,
 };
 use rayon::prelude::*;
-use std::{any::TypeId, cell::Cell, env, fs, io, sync::Arc};
+use std::{any::TypeId, cell::Cell, env, fmt, fs, io, sync::Arc};
 
 const THUMBNAIL_WIDTH: u16 = 128;
 
@@ -91,7 +91,58 @@ enum Message {
     SearchResults(Entity, Vec<mupdf::Quad>),
     Svg(Entity, widget::svg::Handle),
     Thumbnail(Entity, widget::image::Handle),
+    ZoomDropdown(usize),
     ZoomScroll(ScrollDelta),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Zoom {
+    FitBoth,
+    FitHeight,
+    FitWidth,
+    Percent(i16),
+}
+
+impl Zoom {
+    fn all() -> &'static [Self] {
+        &[
+            Zoom::FitBoth,
+            Zoom::FitHeight,
+            Zoom::FitWidth,
+            Zoom::Percent(25),
+            Zoom::Percent(50),
+            Zoom::Percent(75),
+            Zoom::Percent(100),
+            Zoom::Percent(125),
+            Zoom::Percent(150),
+            Zoom::Percent(175),
+            Zoom::Percent(200),
+            Zoom::Percent(225),
+            Zoom::Percent(250),
+            Zoom::Percent(275),
+            Zoom::Percent(300),
+            Zoom::Percent(325),
+            Zoom::Percent(350),
+            Zoom::Percent(375),
+            Zoom::Percent(400),
+            Zoom::Percent(425),
+            Zoom::Percent(450),
+            Zoom::Percent(475),
+            Zoom::Percent(500),
+        ]
+    }
+}
+
+impl fmt::Display for Zoom {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        //TODO: translate?
+        match self {
+            Zoom::FitBoth => write!(f, "Fit width and height"),
+            Zoom::FitHeight => write!(f, "Fit height"),
+            Zoom::FitWidth => write!(f, "Fit width"),
+            Zoom::Percent(percent) => write!(f, "{}%", percent),
+        }
+    }
 }
 
 struct App {
@@ -105,7 +156,9 @@ struct App {
     search_active: bool,
     search_id: widget::Id,
     search_term: String,
-    zoom: f32,
+    view_size: Cell<Size>,
+    zoom: Zoom,
+    zoom_names: Vec<String>,
     zoom_scroll: f32,
 }
 
@@ -172,6 +225,10 @@ impl App {
         }
         Task::batch(tasks)
     }
+
+    fn zoom_to_percent(&mut self) {
+        
+    }
 }
 
 impl Application for App {
@@ -188,7 +245,7 @@ impl Application for App {
         &mut self.core
     }
 
-    fn header_end(&self) -> Vec<Element<Message>> {
+    fn header_start(&self) -> Vec<Element<Message>> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
 
         let mut elements = Vec::with_capacity(1);
@@ -214,7 +271,21 @@ impl Application for App {
         elements
     }
 
+    fn header_end(&self) -> Vec<Element<Message>> {
+        vec![widget::dropdown(
+            &self.zoom_names,
+            Zoom::all().iter().position(|zoom| zoom == &self.zoom),
+            Message::ZoomDropdown,
+        )
+        .into()]
+    }
+
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Message>) {
+        let mut zoom_names = Vec::new();
+        for zoom in Zoom::all() {
+            zoom_names.push(zoom.to_string());
+        }
+
         let mut app = Self {
             core,
             //TODO: what is the best value to use?
@@ -227,7 +298,9 @@ impl Application for App {
             search_active: false,
             search_id: widget::Id::unique(),
             search_term: String::new(),
-            zoom: 1.0,
+            view_size: Cell::new(Size::default()),
+            zoom: Zoom::FitBoth,
+            zoom_names,
             zoom_scroll: 0.0,
         };
         let task = app.update_page();
@@ -382,18 +455,44 @@ impl Application for App {
                 }
                 Key::Character(c) => match c.as_str() {
                     "0" => {
-                        self.zoom = 1.0;
-                        println!("{}", self.zoom)
+                        match &mut self.zoom {
+                            Zoom::Percent(percent) => {
+                                *percent = 100;
+                            }
+                            _ => {}
+                        }
+                        println!("{:?}", self.zoom)
                     }
                     "-" => {
-                        self.zoom = (self.zoom - 0.25).max(0.25);
-                        println!("{}", self.zoom)
+                        match &mut self.zoom {
+                            Zoom::Percent(percent) => {
+                                *percent = (*percent - 25).max(25);
+                            }
+                            //TODO: change to percent based on current fit?
+                            _ => {}
+                        }
+                        println!("{:?}", self.zoom)
                     }
                     "=" => {
-                        self.zoom = (self.zoom + 0.25).min(5.0);
-                        println!("{}", self.zoom)
+                        match &mut self.zoom {
+                            Zoom::Percent(percent) => {
+                                *percent = (*percent + 25).min(500);
+                            }
+                            //TODO: change to percent based on current fit?
+                            _ => {}
+                        }
+                        println!("{:?}", self.zoom)
                     }
-                    "f" | "s" | "/" => {
+                    "f" => {
+                        self.zoom = Zoom::FitBoth;
+                    }
+                    "h" => {
+                        self.zoom = Zoom::FitHeight;
+                    }
+                    "w" => {
+                        self.zoom = Zoom::FitWidth;
+                    }
+                    "s" | "/" => {
                         self.search_active = true;
                         return widget::text_input::focus(self.search_id.clone());
                     }
@@ -441,19 +540,30 @@ impl Application for App {
                     page.icon_handle = Some(handle);
                 }
             }
+            Message::ZoomDropdown(index) => {
+                if let Some(zoom) = Zoom::all().get(index) {
+                    self.zoom = *zoom;
+                }
+            }
             Message::ZoomScroll(delta) => {
                 self.zoom_scroll += match delta {
                     ScrollDelta::Lines { y, .. } => y,
                     //TODO: best pixel to line conversion ratio?
                     ScrollDelta::Pixels { y, .. } => y / 20.0,
                 };
-                while self.zoom_scroll >= 1.0 {
-                    self.zoom = (self.zoom + 0.25).min(5.0);
-                    self.zoom_scroll -= 1.0;
-                }
-                while self.zoom_scroll <= -1.0 {
-                    self.zoom = (self.zoom - 0.25).max(0.25);
-                    self.zoom_scroll += 1.0;
+                match &mut self.zoom {
+                    Zoom::Percent(percent) => {
+                        while self.zoom_scroll >= 1.0 {
+                            *percent = (*percent + 25).min(500);
+                            self.zoom_scroll -= 1.0;
+                        }
+                        while self.zoom_scroll <= -1.0 {
+                            *percent = (*percent - 25).max(25);
+                            self.zoom_scroll += 1.0;
+                        }
+                    }
+                    //TODO: change to percent based on current fit?
+                    _ => {}
                 }
                 println!("{}", self.zoom);
             }
@@ -466,9 +576,18 @@ impl Application for App {
 
         // Handle cached images
         if let Some(page) = self.nav_model.data::<Page>(entity) {
-            let width = page.bounds.width() * self.zoom;
-            let height = page.bounds.height() * self.zoom;
             return widget::responsive(move |size| {
+                self.view_size.set(size);
+                let ratio = match self.zoom {
+                    Zoom::FitHeight => size.height / page.bounds.height(),
+                    Zoom::FitWidth => size.width / page.bounds.width(),
+                    Zoom::FitBoth => {
+                        (size.width / page.bounds.width()).min(size.height / page.bounds.height())
+                    }
+                    Zoom::Percent(percent) => (percent as f32) / 100.0,
+                };
+                let width = page.bounds.width() * ratio;
+                let height = page.bounds.height() * ratio;
                 let mut container = widget::container(
                     widget::container(if let Some(handle) = &page.svg_handle {
                         Element::from(
