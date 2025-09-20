@@ -1,6 +1,7 @@
 #TODO: more build-out, desktop actions, translations?
 [Desktop Entry]
 Name=COSMIC Document Reader
+Name[ar]=قارئ مستندات COSMIC
 Exec=cosmic-reader %u
 Terminal=false
 Type=Application
@@ -10,3 +11,4 @@ MimeType=application/pdf;
 Icon=com.system76.CosmicReader
 Categories=COSMIC;Office;Viewer;
 Keywords=pdf;document;presentation;viewer;reader;
+Keywords[ar]=مستند;قارئ;عارض;عرض تقديمي;
