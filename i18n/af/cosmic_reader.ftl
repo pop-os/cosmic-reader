@@ -1,2 +1,2 @@
 open-file = Oop lêer
-no-file-open = Geen lêer oop nie
+no-file-open = Geen oop lêers nie
