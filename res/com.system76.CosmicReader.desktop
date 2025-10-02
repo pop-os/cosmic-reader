@@ -2,6 +2,7 @@
 [Desktop Entry]
 Name=COSMIC Document Reader
 Name[ar]=قارئ مستندات COSMIC
+Name[cs]=Prohlížeč dokumentů COSMIC
 Exec=cosmic-reader %u
 Terminal=false
 Type=Application
@@ -12,3 +13,4 @@ Icon=com.system76.CosmicReader
 Categories=COSMIC;Office;Viewer;
 Keywords=pdf;document;presentation;viewer;reader;
 Keywords[ar]=مستند;قارئ;عارض;عرض تقديمي;
+Keywords[cs]=pdf;dokument;prezentace;čtečka;prohlížeč;
