@@ -1,2 +1,2 @@
 open-file = Otwórz plik
-no-file-open = brak otwartych plików
+no-file-open = Brak otwartych plików
