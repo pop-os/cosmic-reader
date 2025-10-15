@@ -1,7 +1,7 @@
 // This code is from fontdb and keeps the same license, it is modified to support missing post script names
 
 use cosmic::iced::advanced::graphics::text::cosmic_text::fontdb::{
-    FaceInfo, Source, Stretch, Style, Weight, ID,
+    FaceInfo, ID, Source, Stretch, Style, Weight,
 };
 use ttf_parser::Language;
 

@@ -1,20 +1,20 @@
 use cosmic::{
-    action,
+    Application, Element, action,
     app::{Core, Settings, Task},
     cosmic_theme, executor,
     iced::{
+        Alignment, Color, ContentFit, Length, Rectangle, Subscription,
         core::SmolStr,
         event::{self, Event},
         futures::SinkExt,
-        keyboard::{key::Named, Event as KeyEvent, Key, Modifiers},
+        keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
         mouse::ScrollDelta,
         stream,
         widget::scrollable,
-        window, Alignment, Color, ContentFit, Length, Rectangle, Subscription,
+        window,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
-    Application, Element,
 };
 use rayon::prelude::*;
 use std::{any::TypeId, cell::Cell, fmt, process, sync::Arc};
@@ -260,7 +260,7 @@ impl Application for App {
         &mut self.core
     }
 
-    fn header_start(&self) -> Vec<Element<Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Message>> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
 
         let mut elements = Vec::with_capacity(1);
@@ -286,13 +286,15 @@ impl Application for App {
         elements
     }
 
-    fn header_end(&self) -> Vec<Element<Message>> {
-        vec![widget::dropdown(
-            &self.zoom_names,
-            Zoom::all().iter().position(|zoom| zoom == &self.zoom),
-            Message::ZoomDropdown,
-        )
-        .into()]
+    fn header_end(&self) -> Vec<Element<'_, Message>> {
+        vec![
+            widget::dropdown(
+                &self.zoom_names,
+                Zoom::all().iter().position(|zoom| zoom == &self.zoom),
+                Message::ZoomDropdown,
+            )
+            .into(),
+        ]
     }
 
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Message>) {
@@ -322,7 +324,7 @@ impl Application for App {
         (app, task)
     }
 
-    fn nav_bar(&self) -> Option<Element<action::Action<Message>>> {
+    fn nav_bar(&self) -> Option<Element<'_, action::Action<Message>>> {
         if !self.core.nav_bar_active() || self.fullscreen {
             return None;
         }
@@ -464,7 +466,7 @@ impl Application for App {
                 }
             }
             //TODO: move to key binds and set up menu
-            Message::Key(modifiers, key, text) => match &key {
+            Message::Key(_modifiers, key, _text) => match &key {
                 Key::Named(Named::ArrowUp | Named::ArrowLeft | Named::PageUp) => {
                     let pos = self
                         .nav_model
@@ -599,7 +601,7 @@ impl Application for App {
         Task::none()
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let entity = self.nav_model.active();
 
         // Handle cached images
@@ -678,21 +680,23 @@ impl Application for App {
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::with_capacity(3);
 
-        subscriptions.push(event::listen_with(|event, status, window_id| match event {
-            Event::Keyboard(KeyEvent::KeyPressed {
-                key,
-                modifiers,
-                text,
-                ..
-            }) => match status {
-                event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
-                event::Status::Captured => None,
+        subscriptions.push(event::listen_with(
+            |event, status, _window_id| match event {
+                Event::Keyboard(KeyEvent::KeyPressed {
+                    key,
+                    modifiers,
+                    text,
+                    ..
+                }) => match status {
+                    event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
+                    event::Status::Captured => None,
+                },
+                Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
+                    Some(Message::ModifiersChanged(modifiers))
+                }
+                _ => None,
             },
-            Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
-                Some(Message::ModifiersChanged(modifiers))
-            }
-            _ => None,
-        }));
+        ));
 
         struct LoaderSubscription;
         if let Some(url) = self.flags.url_opt.clone() {

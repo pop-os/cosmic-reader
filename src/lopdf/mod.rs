@@ -1,16 +1,16 @@
 use cosmic::{
+    Application, Element, Renderer, Theme,
     app::{Core, Settings, Task},
     executor,
     iced::{
-        keyboard::{self, key::Named, Key},
+        Color, Length, Point, Rectangle, Size, Vector,
+        keyboard::{self, Key, key::Named},
         mouse,
         mouse::Cursor,
         widget::canvas::{self, event::Status},
-        Color, Length, Point, Rectangle, Size, Vector,
     },
     iced_renderer,
     widget::{self, image, nav_bar::Model},
-    Application, Element, Renderer, Theme,
 };
 use lopdf::{Document, ObjectId};
 use std::{collections::HashMap, env, sync::Mutex};
