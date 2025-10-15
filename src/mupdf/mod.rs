@@ -184,10 +184,10 @@ struct App {
 impl App {
     fn entity_by_index(&self, index: i32) -> Option<Entity> {
         for entity in self.nav_model.iter() {
-            if let Some(page) = self.nav_model.data::<Page>(entity) {
-                if page.index == index {
-                    return Some(entity);
-                }
+            if let Some(page) = self.nav_model.data::<Page>(entity)
+                && page.index == index
+            {
+                return Some(entity);
             }
         }
         None
@@ -227,20 +227,20 @@ impl App {
                 }
             }
         }
-        if page.svg_handle.is_none() {
-            if let Some(display_list) = page.display_list.clone() {
-                tasks.push(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let svg = display_list.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
-                            Message::Svg(entity, widget::svg::Handle::from_memory(svg.into_bytes()))
-                        })
-                        .await
-                        .unwrap()
-                    },
-                    |x| action::app(x),
-                ));
-            }
+        if page.svg_handle.is_none()
+            && let Some(display_list) = page.display_list.clone()
+        {
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let svg = display_list.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
+                        Message::Svg(entity, widget::svg::Handle::from_memory(svg.into_bytes()))
+                    })
+                    .await
+                    .unwrap()
+                },
+                action::app,
+            ));
         }
         Task::batch(tasks)
     }
@@ -423,7 +423,7 @@ impl Application for App {
                             .await
                             .unwrap()
                         },
-                        |x| action::app(x),
+                        action::app,
                     ));
                     return Task::batch(tasks);
                 }
@@ -503,7 +503,7 @@ impl Application for App {
                             Zoom::Percent(percent) => percent,
                             _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
                         };
-                        self.zoom = Zoom::Percent((percent - 25).max(25).min(500));
+                        self.zoom = Zoom::Percent((percent - 25).clamp(25, 500));
                         println!("{:?}", self.zoom)
                     }
                     "=" => {
@@ -511,7 +511,7 @@ impl Application for App {
                             Zoom::Percent(percent) => percent,
                             _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
                         };
-                        self.zoom = Zoom::Percent((percent + 25).max(25).min(500));
+                        self.zoom = Zoom::Percent((percent + 25).clamp(25, 500));
                         println!("{:?}", self.zoom)
                     }
                     "f" => {
@@ -594,7 +594,7 @@ impl Application for App {
                     percent -= 25;
                     self.zoom_scroll += 1.0;
                 }
-                self.zoom = Zoom::Percent(percent.max(25).min(500));
+                self.zoom = Zoom::Percent(percent.clamp(25, 500));
                 println!("{}", self.zoom);
             }
         }
@@ -754,10 +754,10 @@ impl Application for App {
             //TODO: efficiently cache this somehow
             let mut display_lists = Vec::with_capacity(self.nav_model.len());
             for entity in self.nav_model.iter() {
-                if let Some(page) = self.nav_model.data::<Page>(entity) {
-                    if let Some(display_list) = page.display_list.clone() {
-                        display_lists.push((entity, display_list));
-                    }
+                if let Some(page) = self.nav_model.data::<Page>(entity)
+                    && let Some(display_list) = page.display_list.clone()
+                {
+                    display_lists.push((entity, display_list));
                 }
             }
 

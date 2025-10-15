@@ -44,7 +44,7 @@ branch = "0.5"
 optional = true
 
 [target.'cfg(unix)'.dependencies]
-fork = "0.2"
+fork = "0.4"
 
 [features]
 default = ["mupdf", "sys-lib", "xdg-portal", "wgpu"]

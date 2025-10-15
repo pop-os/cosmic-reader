@@ -27,6 +27,6 @@ pub fn main(
     let output_str = output
         .to_str()
         .ok_or_else(|| format!("{:?} is not valid UTF-8", output))?;
-    pixmap.save_as(&output_str, mupdf::ImageFormat::PNG)?;
+    pixmap.save_as(output_str, mupdf::ImageFormat::PNG)?;
     Ok(())
 }
