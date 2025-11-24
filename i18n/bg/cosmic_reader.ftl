@@ -1,2 +1,2 @@
-no-file-open = Отворете файл
+no-file-open = Няма отворен файл
 open-file = Отваряне на файл
