@@ -1,11 +1,11 @@
 use cosmic::iced::{
+    Color, Font, Pixels, Point, Size, Vector,
     advanced::graphics::text::{self, cosmic_text},
     alignment,
     widget::{
         canvas::Path,
         text::{LineHeight, Shaping},
     },
-    Color, Font, Pixels, Point, Size, Vector,
 };
 
 /// A bunch of text that can be drawn to a canvas
