@@ -1,2 +1,2 @@
-no-file-open = Geen bestanden geopend
-open-file = Open een bestand
+no-file-open = Geen bestand geopend
+open-file = Open bestand
