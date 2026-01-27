@@ -1,8 +1,9 @@
 use cosmic::{
     iced::{
+        Color, Font, Pixels, Point, Rectangle, Size, Vector,
         advanced::graphics::text::{
             self,
-            cosmic_text::{self, fontdb, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight},
+            cosmic_text::{self, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight, fontdb},
         },
         alignment::{Horizontal, Vertical},
         keyboard,
@@ -14,7 +15,6 @@ use cosmic::{
             image,
             text::{LineHeight, Shaping},
         },
-        Color, Font, Pixels, Point, Rectangle, Size, Vector,
     },
     iced_renderer::geometry::Frame,
 };
@@ -564,7 +564,9 @@ pub fn page_ops(doc: &Document, page_id: ObjectId) -> Vec<PageOp> {
                                     }
                                 }
                                 if !found {
-                                    log::warn!("failed to find font {name:?} by postscript name {base_font:?}");
+                                    log::warn!(
+                                        "failed to find font {name:?} by postscript name {base_font:?}"
+                                    );
                                 }
                             }
                             Err(err) => {
