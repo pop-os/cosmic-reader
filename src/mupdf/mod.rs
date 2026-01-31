@@ -1,20 +1,20 @@
 use cosmic::{
-    action,
+    Application, Element, action,
     app::{Core, Settings, Task},
     cosmic_theme, executor,
     iced::{
+        Alignment, Color, ContentFit, Length, Rectangle, Subscription,
         core::SmolStr,
         event::{self, Event},
         futures::SinkExt,
-        keyboard::{key::Named, Event as KeyEvent, Key, Modifiers},
+        keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
         mouse::ScrollDelta,
         stream,
         widget::scrollable,
-        window, Alignment, Color, ContentFit, Length, Rectangle, Subscription,
+        window,
     },
     theme,
     widget::{self, nav_bar::Model, segmented_button::Entity},
-    Application, Element,
 };
 use rayon::prelude::*;
 use std::{any::TypeId, cell::Cell, fmt, process, sync::Arc};
@@ -184,10 +184,10 @@ struct App {
 impl App {
     fn entity_by_index(&self, index: i32) -> Option<Entity> {
         for entity in self.nav_model.iter() {
-            if let Some(page) = self.nav_model.data::<Page>(entity) {
-                if page.index == index {
-                    return Some(entity);
-                }
+            if let Some(page) = self.nav_model.data::<Page>(entity)
+                && page.index == index
+            {
+                return Some(entity);
             }
         }
         None
@@ -227,20 +227,20 @@ impl App {
                 }
             }
         }
-        if page.svg_handle.is_none() {
-            if let Some(display_list) = page.display_list.clone() {
-                tasks.push(Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || {
-                            let svg = display_list.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
-                            Message::Svg(entity, widget::svg::Handle::from_memory(svg.into_bytes()))
-                        })
-                        .await
-                        .unwrap()
-                    },
-                    |x| action::app(x),
-                ));
-            }
+        if page.svg_handle.is_none()
+            && let Some(display_list) = page.display_list.clone()
+        {
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let svg = display_list.to_svg(&mupdf::Matrix::IDENTITY).unwrap();
+                        Message::Svg(entity, widget::svg::Handle::from_memory(svg.into_bytes()))
+                    })
+                    .await
+                    .unwrap()
+                },
+                action::app,
+            ));
         }
         Task::batch(tasks)
     }
@@ -260,7 +260,7 @@ impl Application for App {
         &mut self.core
     }
 
-    fn header_start(&self) -> Vec<Element<Message>> {
+    fn header_start(&self) -> Vec<Element<'_, Message>> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
 
         let mut elements = Vec::with_capacity(1);
@@ -286,13 +286,15 @@ impl Application for App {
         elements
     }
 
-    fn header_end(&self) -> Vec<Element<Message>> {
-        vec![widget::dropdown(
-            &self.zoom_names,
-            Zoom::all().iter().position(|zoom| zoom == &self.zoom),
-            Message::ZoomDropdown,
-        )
-        .into()]
+    fn header_end(&self) -> Vec<Element<'_, Message>> {
+        vec![
+            widget::dropdown(
+                &self.zoom_names,
+                Zoom::all().iter().position(|zoom| zoom == &self.zoom),
+                Message::ZoomDropdown,
+            )
+            .into(),
+        ]
     }
 
     fn init(core: Core, flags: Self::Flags) -> (Self, Task<Message>) {
@@ -322,7 +324,7 @@ impl Application for App {
         (app, task)
     }
 
-    fn nav_bar(&self) -> Option<Element<action::Action<Message>>> {
+    fn nav_bar(&self) -> Option<Element<'_, action::Action<Message>>> {
         if !self.core.nav_bar_active() || self.fullscreen {
             return None;
         }
@@ -421,7 +423,7 @@ impl Application for App {
                             .await
                             .unwrap()
                         },
-                        |x| action::app(x),
+                        action::app,
                     ));
                     return Task::batch(tasks);
                 }
@@ -464,7 +466,7 @@ impl Application for App {
                 }
             }
             //TODO: move to key binds and set up menu
-            Message::Key(modifiers, key, text) => match &key {
+            Message::Key(_modifiers, key, _text) => match &key {
                 Key::Named(Named::ArrowUp | Named::ArrowLeft | Named::PageUp) => {
                     let pos = self
                         .nav_model
@@ -501,7 +503,7 @@ impl Application for App {
                             Zoom::Percent(percent) => percent,
                             _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
                         };
-                        self.zoom = Zoom::Percent((percent - 25).max(25).min(500));
+                        self.zoom = Zoom::Percent((percent - 25).clamp(25, 500));
                         println!("{:?}", self.zoom)
                     }
                     "=" => {
@@ -509,7 +511,7 @@ impl Application for App {
                             Zoom::Percent(percent) => percent,
                             _ => ((self.view_ratio.get() * 4.0).round() as i16) * 25,
                         };
-                        self.zoom = Zoom::Percent((percent + 25).max(25).min(500));
+                        self.zoom = Zoom::Percent((percent + 25).clamp(25, 500));
                         println!("{:?}", self.zoom)
                     }
                     "f" => {
@@ -592,14 +594,14 @@ impl Application for App {
                     percent -= 25;
                     self.zoom_scroll += 1.0;
                 }
-                self.zoom = Zoom::Percent(percent.max(25).min(500));
+                self.zoom = Zoom::Percent(percent.clamp(25, 500));
                 println!("{}", self.zoom);
             }
         }
         Task::none()
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let entity = self.nav_model.active();
 
         // Handle cached images
@@ -678,21 +680,23 @@ impl Application for App {
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::with_capacity(3);
 
-        subscriptions.push(event::listen_with(|event, status, window_id| match event {
-            Event::Keyboard(KeyEvent::KeyPressed {
-                key,
-                modifiers,
-                text,
-                ..
-            }) => match status {
-                event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
-                event::Status::Captured => None,
+        subscriptions.push(event::listen_with(
+            |event, status, _window_id| match event {
+                Event::Keyboard(KeyEvent::KeyPressed {
+                    key,
+                    modifiers,
+                    text,
+                    ..
+                }) => match status {
+                    event::Status::Ignored => Some(Message::Key(modifiers, key, text)),
+                    event::Status::Captured => None,
+                },
+                Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
+                    Some(Message::ModifiersChanged(modifiers))
+                }
+                _ => None,
             },
-            Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => {
-                Some(Message::ModifiersChanged(modifiers))
-            }
-            _ => None,
-        }));
+        ));
 
         struct LoaderSubscription;
         if let Some(url) = self.flags.url_opt.clone() {
@@ -750,10 +754,10 @@ impl Application for App {
             //TODO: efficiently cache this somehow
             let mut display_lists = Vec::with_capacity(self.nav_model.len());
             for entity in self.nav_model.iter() {
-                if let Some(page) = self.nav_model.data::<Page>(entity) {
-                    if let Some(display_list) = page.display_list.clone() {
-                        display_lists.push((entity, display_list));
-                    }
+                if let Some(page) = self.nav_model.data::<Page>(entity)
+                    && let Some(display_list) = page.display_list.clone()
+                {
+                    display_lists.push((entity, display_list));
                 }
             }
 
