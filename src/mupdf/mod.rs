@@ -104,6 +104,7 @@ enum Message {
     NavScroll(scrollable::Viewport),
     NavSelect(Entity),
     Pages(Vec<Page>),
+    Print,
     SearchActivate,
     SearchClear,
     SearchInput(String),
@@ -263,7 +264,21 @@ impl Application for App {
     fn header_start(&self) -> Vec<Element<'_, Message>> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::spacing();
 
-        let mut elements = Vec::with_capacity(1);
+        let mut elements = Vec::with_capacity(2);
+
+        elements.push(
+            widget::button::icon(widget::icon::from_name("folder-open-symbolic"))
+                .on_press(Message::FileOpen)
+                .padding(space_xxs)
+                .into(),
+        );
+
+        elements.push(
+            widget::button::icon(widget::icon::from_name("document-print-symbolic"))
+                .on_press(Message::Print)
+                .padding(space_xxs)
+                .into(),
+        );
 
         if self.search_active {
             elements.push(
@@ -523,6 +538,9 @@ impl Application for App {
                     "w" => {
                         self.zoom = Zoom::FitWidth;
                     }
+                    "p" => {
+                        return self.update(Message::Print);
+                    }
                     "s" | "/" => {
                         self.search_active = true;
                         return widget::text_input::focus(self.search_id.clone());
@@ -548,6 +566,29 @@ impl Application for App {
                 self.nav_model.activate_position(0);
                 return self.update_page();
             }
+            Message::Print => {
+                if let Some(url) = &self.flags.url_opt {
+                    if let Ok(path) = url.to_file_path() {
+                        let path = path.to_string_lossy().to_string();
+                        return Task::perform(
+                            async move {
+                                match process::Command::new("lp").arg(&path).spawn() {
+                                    Ok(mut child) => {
+                                        if let Err(err) = child.wait() {
+                                            log::warn!("failed to wait for lp: {}", err);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        log::warn!("failed to spawn lp: {}", err);
+                                    }
+                                }
+                            },
+                            |_| action::none(),
+                        );
+                    }
+                }
+            }
+
             Message::SearchActivate => {
                 self.search_active = true;
                 return widget::text_input::focus(self.search_id.clone());
