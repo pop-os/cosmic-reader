@@ -3,14 +3,14 @@ use cosmic::{
     app::{Core, Settings, Task},
     cosmic_theme, executor,
     iced::{
-        Alignment, Color, ContentFit, Length, Rectangle, Subscription,
+        Alignment, Color, ContentFit, Length, Point, Rectangle, Subscription,
         core::SmolStr,
         event::{self, Event},
         futures::SinkExt,
         keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
-        mouse::ScrollDelta,
+        mouse::{self, ScrollDelta},
         stream,
-        widget::scrollable,
+        widget::{canvas, scrollable, Stack},
         window,
     },
     theme,
@@ -91,6 +91,65 @@ struct Page {
     icon_bounds: Cell<Option<Rectangle>>,
     icon_handle: Option<widget::image::Handle>,
     svg_handle: Option<widget::svg::Handle>,
+    search_results: Vec<mupdf::Quad>,
+}
+
+struct SearchOverlay {
+    quads: Vec<mupdf::Quad>,
+    ratio: f32,
+    x0: f32,
+    y0: f32,
+}
+
+impl<Message> canvas::Program<Message, cosmic::Theme, cosmic::Renderer> for SearchOverlay {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &cosmic::Renderer,
+        _theme: &cosmic::Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let highlight = Color::from_rgba8(255, 255, 0, 0.4);
+
+        eprintln!("SearchOverlay::draw: {} quads, ratio={}, x0={}, y0={}, bounds={:?}", self.quads.len(), self.ratio, self.x0, self.y0, bounds);
+        for (i, quad) in self.quads.iter().enumerate() {
+            let p1 = Point::new(
+                (quad.ul.x - self.x0) * self.ratio,
+                (quad.ul.y - self.y0) * self.ratio,
+            );
+            let p2 = Point::new(
+                (quad.ur.x - self.x0) * self.ratio,
+                (quad.ur.y - self.y0) * self.ratio,
+            );
+            let p3 = Point::new(
+                (quad.lr.x - self.x0) * self.ratio,
+                (quad.lr.y - self.y0) * self.ratio,
+            );
+            let p4 = Point::new(
+                (quad.ll.x - self.x0) * self.ratio,
+                (quad.ll.y - self.y0) * self.ratio,
+            );
+            if i == 0 {
+                eprintln!("  quad[0]: ({}, {}) ({}, {}) ({}, {}) ({}, {})", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y, p4.x, p4.y);
+            }
+
+            let mut builder = canvas::path::Builder::new();
+            builder.move_to(p1);
+            builder.line_to(p2);
+            builder.line_to(p3);
+            builder.line_to(p4);
+            builder.close();
+
+            let path = builder.build();
+            frame.fill(&path, canvas::Fill::from(highlight));
+        }
+
+        vec![frame.into_geometry()]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -492,6 +551,12 @@ impl Application for App {
                 }
                 Key::Named(Named::Escape) => {
                     self.search_active = false;
+                    let entities: Vec<_> = self.nav_model.iter().collect();
+                    for entity in entities {
+                        if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                            page.search_results.clear();
+                        }
+                    }
                 }
                 Key::Character(c) => match c.as_str() {
                     "0" => {
@@ -554,12 +619,29 @@ impl Application for App {
             }
             Message::SearchClear => {
                 self.search_active = false;
+                self.search_term.clear();
+                let entities: Vec<_> = self.nav_model.iter().collect();
+                for entity in entities {
+                    if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                        page.search_results.clear();
+                    }
+                }
             }
             Message::SearchInput(term) => {
+                eprintln!("SearchInput: {:?}", term);
                 self.search_term = term.clone();
+                let entities: Vec<_> = self.nav_model.iter().collect();
+                for entity in entities {
+                    if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                        page.search_results.clear();
+                    }
+                }
             }
             Message::SearchResults(entity, quads) => {
-                //TODO
+                eprintln!("SearchResults: entity={:?}, quads={}", entity, quads.len());
+                if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
+                    page.search_results = quads;
+                }
             }
             Message::Svg(entity, handle) => {
                 if let Some(page) = self.nav_model.data_mut::<Page>(entity) {
@@ -619,19 +701,41 @@ impl Application for App {
                 self.view_ratio.set(ratio);
                 let width = page.bounds.width() * ratio;
                 let height = page.bounds.height() * ratio;
-                let mut container = widget::container(
-                    widget::container(if let Some(handle) = &page.svg_handle {
-                        Element::from(
-                            widget::svg(handle.clone())
-                                .content_fit(ContentFit::Fill)
-                                .width(width)
-                                .height(height),
-                        )
-                    } else {
-                        Element::from(widget::Space::new(width, height))
-                    })
-                    .style(|_theme| widget::container::background(Color::WHITE)),
-                );
+                let page_widget = widget::container(if let Some(handle) = &page.svg_handle {
+                    Element::from(
+                        widget::svg(handle.clone())
+                            .content_fit(ContentFit::Fill)
+                            .width(width)
+                            .height(height),
+                    )
+                } else {
+                    Element::from(widget::Space::new(width, height))
+                })
+                .style(|_theme| widget::container::background(Color::WHITE))
+                .width(width)
+                .height(height);
+
+                let mut stack = Stack::new()
+                    .push(page_widget)
+                    .width(width)
+                    .height(height);
+
+                if !page.search_results.is_empty() {
+                    eprintln!("view: showing {} search highlights for page {:?}", page.search_results.len(), entity);
+                    let overlay = SearchOverlay {
+                        quads: page.search_results.clone(),
+                        ratio,
+                        x0: page.bounds.x0,
+                        y0: page.bounds.y0,
+                    };
+                    stack = stack.push(
+                        canvas::Canvas::new(overlay)
+                            .width(width)
+                            .height(height),
+                    );
+                }
+
+                let mut container = widget::container(stack);
                 if size.width > width {
                     container = container.center_x(size.width);
                 }
@@ -724,6 +828,7 @@ impl Application for App {
                                 icon_bounds: Cell::new(None),
                                 icon_handle: None,
                                 svg_handle: None,
+                                search_results: Vec::new(),
                             });
                         }
                         handle
@@ -764,27 +869,27 @@ impl Application for App {
             struct SearchSubscription;
             let term = self.search_term.clone();
             subscriptions.push(Subscription::run_with_id(
-                (TypeId::of::<SearchSubscription>(), term.clone()),
+                (TypeId::of::<SearchSubscription>(), term.clone(), display_lists.len()),
                 stream::channel(16, |output| async move {
                     let output = Arc::new(tokio::sync::Mutex::new(output));
                     let handle = tokio::runtime::Handle::current();
                     tokio::task::spawn_blocking(move || {
                         let timer = std::time::Instant::now();
                         display_lists.par_iter().for_each(|(entity, display_list)| {
-                            let quads = display_list.search(&term, 100).unwrap();
-                            if !quads.is_empty() {
-                                eprintln!("{:?}: {:?} results", entity, quads.len(),);
-                                let quads_vec: Vec<mupdf::Quad> = quads.into_iter().collect();
-                                let output = output.clone();
-                                handle
-                                    .block_on(async move {
-                                        output
-                                            .lock()
-                                            .await
-                                            .send(Message::SearchResults(*entity, quads_vec))
-                                            .await
-                                    })
-                                    .unwrap();
+                            match display_list.search(&term, 100) {
+                                Ok(quads) => {
+                                    eprintln!("search: entity={:?}, term={:?}, results={}", entity, term, quads.len());
+                                    let quads_vec: Vec<mupdf::Quad> = quads.into_iter().collect();
+                                    if !quads_vec.is_empty() {
+                                        let output = output.clone();
+                                        let _ = handle.block_on(async move {
+                                            output.lock().await.send(Message::SearchResults(*entity, quads_vec)).await
+                                        });
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("search error: entity={:?}, term={:?}, err={}", entity, term, err);
+                                }
                             }
                         });
                         eprintln!("searched for {:?} in {:?}", term, timer.elapsed());
