@@ -7,7 +7,7 @@ edition = "2024"
 vergen = { version = "8", features = ["git", "gitcl"] }
 
 [dependencies]
-clap_lex = "0.7"
+clap_lex = "1.1"
 #TODO: color_space may not be maintained
 color_space = "0.5"
 env_logger = "0.11"
@@ -31,24 +31,17 @@ default-features = false
 features = ["tokio", "winit"]
 
 # For lopdf feature
-
 [dependencies.lopdf]
 git = "https://github.com/J-F-Liu/lopdf.git"
 optional = true
 
 # For mupdf feature
-
 [dependencies.mupdf]
 git = "https://github.com/messense/mupdf-rs"
-branch = "main"
-optional = true
- 
- [target.'cfg(unix)'.dependencies]
-
 optional = true
 
 [target.'cfg(unix)'.dependencies]
-fork = "0.4"
+fork = "0.7"
 
 [features]
 default = ["mupdf", "sys-lib", "xdg-portal", "wgpu"]

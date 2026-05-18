@@ -1,19 +1,17 @@
-use cosmic::{
-    Application, Element, Renderer, Theme,
-    app::{Core, Settings, Task},
-    executor,
-    iced::{
-        Color, Length, Point, Rectangle, Size, Vector,
-        keyboard::{self, Key, key::Named},
-        mouse,
-        mouse::Cursor,
-        widget::canvas::{self, event::Status},
-    },
-    iced_renderer,
-    widget::{self, image, nav_bar::Model},
-};
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::keyboard::key::Named;
+use cosmic::iced::keyboard::{self, Key};
+use cosmic::iced::mouse::Cursor;
+use cosmic::iced::widget::canvas::event::Status;
+use cosmic::iced::widget::canvas::{self};
+use cosmic::iced::{Color, Length, Point, Rectangle, Size, Vector, mouse};
+use cosmic::widget::nav_bar::Model;
+use cosmic::widget::{self, image};
+use cosmic::{Application, Element, Renderer, Theme, executor, iced_renderer};
 use lopdf::{Document, ObjectId};
-use std::{collections::HashMap, env, sync::Mutex};
+use std::collections::HashMap;
+use std::env;
+use std::sync::Mutex;
 
 mod pdf;
 mod text;
