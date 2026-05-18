@@ -39,8 +39,12 @@ optional = true
 # For mupdf feature
 
 [dependencies.mupdf]
-git = "https://github.com/jackpot51/mupdf-rs"
-branch = "0.5"
+git = "https://github.com/messense/mupdf-rs"
+branch = "main"
+optional = true
+ 
+ [target.'cfg(unix)'.dependencies]
+
 optional = true
 
 [target.'cfg(unix)'.dependencies]
