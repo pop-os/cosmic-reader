@@ -1,4 +1,5 @@
-use std::{error::Error, path::Path};
+use std::error::Error;
+use std::path::Path;
 use url::Url;
 
 pub fn main(

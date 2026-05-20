@@ -1,30 +1,21 @@
-use cosmic::{
-    iced::{
-        Color, Font, Pixels, Point, Rectangle, Size, Vector,
-        advanced::graphics::text::{
-            self,
-            cosmic_text::{self, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight, fontdb},
-        },
-        alignment::{Horizontal, Vertical},
-        keyboard,
-        widget::{
-            canvas::{
-                self,
-                path::lyon_path::geom::euclid::{Point2D, Transform2D, UnknownUnit, Vector2D},
-            },
-            image,
-            text::{LineHeight, Shaping},
-        },
-    },
-    iced_renderer::geometry::Frame,
+use cosmic::iced::advanced::graphics::text::cosmic_text::{
+    self, Attrs, AttrsOwned, FamilyOwned, Stretch, Style, Weight, fontdb,
 };
+use cosmic::iced::advanced::graphics::text::{self};
+use cosmic::iced::alignment::{Horizontal, Vertical};
+use cosmic::iced::widget::canvas::path::lyon_path::geom::euclid::{
+    Point2D, Transform2D, UnknownUnit, Vector2D,
+};
+use cosmic::iced::widget::canvas::{self};
+use cosmic::iced::widget::image;
+use cosmic::iced::widget::text::{LineHeight, Shaping};
+use cosmic::iced::{Color, Font, Pixels, Point, Rectangle, Size, Vector, keyboard};
+use cosmic::iced_renderer::geometry::Frame;
 use lopdf::{Dictionary, Document, Encoding, Object, ObjectId};
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    mem, str,
-    sync::{Arc, Mutex},
-};
+use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
+use std::sync::{Arc, Mutex};
+use std::{mem, str};
 
 use super::text::Text;
 

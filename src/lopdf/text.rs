@@ -1,12 +1,7 @@
-use cosmic::iced::{
-    Color, Font, Pixels, Point, Size, Vector,
-    advanced::graphics::text::{self, cosmic_text},
-    alignment,
-    widget::{
-        canvas::Path,
-        text::{LineHeight, Shaping},
-    },
-};
+use cosmic::iced::advanced::graphics::text::{self, cosmic_text};
+use cosmic::iced::widget::canvas::Path;
+use cosmic::iced::widget::text::{LineHeight, Shaping};
+use cosmic::iced::{Color, Font, Pixels, Point, Size, Vector, alignment};
 
 /// A bunch of text that can be drawn to a canvas
 #[derive(Debug, Clone)]

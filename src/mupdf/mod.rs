@@ -1,23 +1,21 @@
-use cosmic::{
-    Application, Element, action,
-    app::{Core, Settings, Task},
-    cosmic_theme, executor,
-    iced::{
-        Alignment, Color, ContentFit, Length, Rectangle, Subscription,
-        core::SmolStr,
-        event::{self, Event},
-        futures::SinkExt,
-        keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
-        mouse::ScrollDelta,
-        stream,
-        widget::scrollable,
-        window,
-    },
-    theme,
-    widget::{self, nav_bar::Model, segmented_button::Entity},
-};
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::core::SmolStr;
+use cosmic::iced::event::{self, Event};
+use cosmic::iced::futures::{self, SinkExt};
+use cosmic::iced::keyboard::key::Named;
+use cosmic::iced::keyboard::{Event as KeyEvent, Key, Modifiers};
+use cosmic::iced::mouse::ScrollDelta;
+use cosmic::iced::widget::scrollable;
+use cosmic::iced::{Alignment, Color, ContentFit, Length, Rectangle, Subscription, stream, window};
+use cosmic::widget::nav_bar::Model;
+use cosmic::widget::segmented_button::Entity;
+use cosmic::widget::{self};
+use cosmic::{Application, Element, action, cosmic_theme, executor, theme};
 use rayon::prelude::*;
-use std::{any::TypeId, cell::Cell, fmt, process, sync::Arc};
+use std::any::TypeId;
+use std::cell::Cell;
+use std::sync::Arc;
+use std::{fmt, hash, process};
 
 use crate::fl;
 
@@ -211,8 +209,8 @@ impl App {
                     tasks.push(scrollable::scroll_to(
                         self.nav_scroll_id.clone(),
                         scrollable::AbsoluteOffset {
-                            x: 0.0,
-                            y: icon_bounds.y,
+                            x: Some(0.0),
+                            y: Some(icon_bounds.y),
                         },
                     ));
                 } else if bounds.y + bounds.height < icon_bounds.y + icon_bounds.height {
@@ -220,8 +218,8 @@ impl App {
                     tasks.push(scrollable::scroll_to(
                         self.nav_scroll_id.clone(),
                         scrollable::AbsoluteOffset {
-                            x: 0.0,
-                            y: icon_bounds.y + icon_bounds.height - bounds.height,
+                            x: Some(0.0),
+                            y: Some(icon_bounds.y + icon_bounds.height - bounds.height),
                         },
                     ));
                 }
@@ -362,7 +360,7 @@ impl Application for App {
                 } else {
                     column = column.push(
                         widget::button::custom_image_button(
-                            widget::Space::with_height(Length::Fixed(height)),
+                            widget::space::vertical().height(height),
                             None,
                         )
                         .width(width)
@@ -455,7 +453,7 @@ impl Application for App {
                 self.fullscreen = !self.fullscreen;
                 self.core.window.show_headerbar = !self.fullscreen;
                 if let Some(window_id) = self.core.main_window_id() {
-                    return window::change_mode(
+                    return window::set_mode(
                         window_id,
                         if self.fullscreen {
                             window::Mode::Fullscreen
@@ -628,7 +626,7 @@ impl Application for App {
                                 .height(height),
                         )
                     } else {
-                        Element::from(widget::Space::new(width, height))
+                        Element::from(widget::space().width(width).height(height))
                     })
                     .style(|_theme| widget::container::background(Color::WHITE)),
                 );
@@ -660,7 +658,7 @@ impl Application for App {
                 .spacing(24)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .push(widget::vertical_space())
+                .push(widget::space::vertical())
                 .push(
                     widget::column::with_capacity(2)
                         .align_x(Alignment::Center)
@@ -669,12 +667,12 @@ impl Application for App {
                         .push(widget::text::body(fl!("no-file-open"))),
                 )
                 .push(widget::button::suggested(fl!("open-file")).on_press(Message::FileOpen))
-                .push(widget::vertical_space());
+                .push(widget::space::vertical());
 
             return column.into();
         }
 
-        widget::horizontal_space().into()
+        widget::space::horizontal().into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -700,53 +698,63 @@ impl Application for App {
 
         struct LoaderSubscription;
         if let Some(url) = self.flags.url_opt.clone() {
-            subscriptions.push(Subscription::run_with_id(
-                (TypeId::of::<LoaderSubscription>(), url.clone()),
-                stream::channel(16, |mut output| async move {
-                    //TODO: send errors to UI
-                    let handle = tokio::runtime::Handle::current();
-                    tokio::task::spawn_blocking(move || {
-                        let Ok(path) = url.to_file_path() else { return };
-                        let doc = mupdf::Document::open(path.as_os_str()).unwrap();
-                        let page_count = doc.page_count().unwrap();
-                        //TODO: use outline for document tree view eprintln!("{:#?}", doc.outlines());
+            subscriptions.push(Subscription::run_with(
+                (TypeId::of::<LoaderSubscription>(), url),
+                |(_, url)| {
+                    let url = url.clone();
+                    stream::channel(
+                        16,
+                        |mut output: futures::channel::mpsc::Sender<Message>| async move {
+                            //TODO: send errors to UI
+                            let handle = tokio::runtime::Handle::current();
+                            tokio::task::spawn_blocking(move || {
+                                let Ok(path) = url.to_file_path() else { return };
+                                let doc = mupdf::Document::open(path.as_os_str()).unwrap();
+                                let page_count = doc.page_count().unwrap();
+                                //TODO: use outline for document tree view eprintln!("{:#?}", doc.outlines());
 
-                        // Generate the table of contents
-                        let mut pages = Vec::with_capacity(usize::try_from(page_count).unwrap());
-                        for index in 0..page_count {
-                            let page = doc.load_page(index).unwrap();
-                            //TODO: get label?
-                            let bounds = page.bounds().unwrap();
-                            pages.push(Page {
-                                index,
-                                bounds,
-                                display_list: None,
-                                icon_bounds: Cell::new(None),
-                                icon_handle: None,
-                                svg_handle: None,
-                            });
-                        }
-                        handle
-                            .block_on(async { output.send(Message::Pages(pages)).await })
+                                // Generate the table of contents
+                                let mut pages =
+                                    Vec::with_capacity(usize::try_from(page_count).unwrap());
+                                for index in 0..page_count {
+                                    let page = doc.load_page(index).unwrap();
+                                    //TODO: get label?
+                                    let bounds = page.bounds().unwrap();
+                                    pages.push(Page {
+                                        index,
+                                        bounds,
+                                        display_list: None,
+                                        icon_bounds: Cell::new(None),
+                                        icon_handle: None,
+                                        svg_handle: None,
+                                    });
+                                }
+                                handle
+                                    .block_on(async { output.send(Message::Pages(pages)).await })
+                                    .unwrap();
+
+                                // Generate display lists (cannot be threaded)
+                                for index in 0..page_count {
+                                    let page = doc.load_page(index).unwrap();
+                                    let display_list = page.to_display_list(false).unwrap();
+                                    handle
+                                        .block_on(async {
+                                            output
+                                                .send(Message::DisplayList(
+                                                    index,
+                                                    Arc::new(display_list),
+                                                ))
+                                                .await
+                                        })
+                                        .unwrap();
+                                }
+                            })
+                            .await
                             .unwrap();
-
-                        // Generate display lists (cannot be threaded)
-                        for index in 0..page_count {
-                            let page = doc.load_page(index).unwrap();
-                            let display_list = page.to_display_list(false).unwrap();
-                            handle
-                                .block_on(async {
-                                    output
-                                        .send(Message::DisplayList(index, Arc::new(display_list)))
-                                        .await
-                                })
-                                .unwrap();
-                        }
-                    })
-                    .await
-                    .unwrap();
-                    std::future::pending().await
-                }),
+                            std::future::pending().await
+                        },
+                    )
+                },
             ));
         }
 
@@ -762,37 +770,62 @@ impl Application for App {
             }
 
             struct SearchSubscription;
-            let term = self.search_term.clone();
-            subscriptions.push(Subscription::run_with_id(
-                (TypeId::of::<SearchSubscription>(), term.clone()),
-                stream::channel(16, |output| async move {
-                    let output = Arc::new(tokio::sync::Mutex::new(output));
-                    let handle = tokio::runtime::Handle::current();
-                    tokio::task::spawn_blocking(move || {
-                        let timer = std::time::Instant::now();
-                        display_lists.par_iter().for_each(|(entity, display_list)| {
-                            let quads = display_list.search(&term, 100).unwrap();
-                            if !quads.is_empty() {
-                                eprintln!("{:?}: {:?} results", entity, quads.len(),);
-                                let quads_vec: Vec<mupdf::Quad> = quads.into_iter().collect();
-                                let output = output.clone();
-                                handle
-                                    .block_on(async move {
-                                        output
-                                            .lock()
-                                            .await
-                                            .send(Message::SearchResults(*entity, quads_vec))
-                                            .await
-                                    })
-                                    .unwrap();
-                            }
-                        });
-                        eprintln!("searched for {:?} in {:?}", term, timer.elapsed());
-                    })
-                    .await
-                    .unwrap();
-                    std::future::pending().await
-                }),
+            struct Wrapper {
+                term: String,
+                display_lists: Vec<(Entity, Arc<mupdf::DisplayList>)>,
+            }
+            impl hash::Hash for Wrapper {
+                fn hash<H: hash::Hasher>(&self, state: &mut H) {
+                    TypeId::of::<SearchSubscription>().hash(state);
+                    self.term.hash(state);
+                }
+            }
+            subscriptions.push(Subscription::run_with(
+                Wrapper {
+                    term: self.search_term.clone(),
+                    display_lists,
+                },
+                |Wrapper {
+                     term,
+                     display_lists,
+                 }| {
+                    let term = term.clone();
+                    let display_lists = display_lists.clone();
+                    stream::channel(
+                        16,
+                        |output: futures::channel::mpsc::Sender<Message>| async move {
+                            let output = Arc::new(tokio::sync::Mutex::new(output));
+                            let handle = tokio::runtime::Handle::current();
+                            tokio::task::spawn_blocking(move || {
+                                let timer = std::time::Instant::now();
+                                display_lists.par_iter().for_each(|(entity, display_list)| {
+                                    let quads = display_list.search(&term, 100).unwrap();
+                                    if !quads.is_empty() {
+                                        eprintln!("{:?}: {:?} results", entity, quads.len(),);
+                                        let quads_vec: Vec<mupdf::Quad> =
+                                            quads.into_iter().collect();
+                                        let output = output.clone();
+                                        handle
+                                            .block_on(async move {
+                                                output
+                                                    .lock()
+                                                    .await
+                                                    .send(Message::SearchResults(
+                                                        *entity, quads_vec,
+                                                    ))
+                                                    .await
+                                            })
+                                            .unwrap();
+                                    }
+                                });
+                                eprintln!("searched for {:?} in {:?}", term, timer.elapsed());
+                            })
+                            .await
+                            .unwrap();
+                            std::future::pending().await
+                        },
+                    )
+                },
             ));
         }
 
